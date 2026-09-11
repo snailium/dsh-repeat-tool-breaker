@@ -1,0 +1,57 @@
+name: Publish to npm
+
+# Manual-only: nothing publishes as a side effect of a normal push or release.
+# Provide the credential one of two ways:
+#   1. Repository secret NPM_TOKEN (npm access token) — the simplest bootstrap.
+#   2. npm Trusted Publishing (OIDC): configure this repo + this workflow filename
+#      as a trusted publisher on the npm package page, then leave NPM_TOKEN unset.
+#      `id-token: write` below is what OIDC needs.
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Pack and verify only — do not publish'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: npm publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Test
+        run: npm test
+
+      - name: Refuse to republish an existing version
+        run: |
+          set -euo pipefail
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "::error::${NAME}@${VERSION} is already on npm — bump the version first."
+            exit 1
+          fi
+          echo "About to publish ${NAME}@${VERSION}"
+
+      - name: Publish
+        if: ${{ !inputs.dry-run }}
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Dry run
+        if: ${{ inputs.dry-run }}
+        run: npm publish --dry-run --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
