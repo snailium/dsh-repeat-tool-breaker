@@ -1,0 +1,17 @@
+# Dependencies (only if you install the plugin into a profile with pnpm/npm)
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local scratch used by the dev-loop smoke tests
+/tmp-*
+*.local.yml

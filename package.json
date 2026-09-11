@@ -1,0 +1,46 @@
+{
+  "name": "dsh-repeat-tool-breaker",
+  "version": "0.1.0",
+  "description": "Hard break on repeated identical tool calls: a synchronous ctx.tools.guard monotonic gate that denies the 2nd identical (tool name + canonical arguments) call per agent, with an optional same-path read guard and advisory first-repeat warning.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "guard",
+    "loop",
+    "repeat",
+    "agent"
+  ],
+  "license": "MIT",
+  "author": "snailium",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": {
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/logic.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/snailium/dsh-repeat-tool-breaker.git"
+  },
+  "homepage": "https://github.com/snailium/dsh-repeat-tool-breaker#readme",
+  "bugs": {
+    "url": "https://github.com/snailium/dsh-repeat-tool-breaker/issues"
+  }
+}

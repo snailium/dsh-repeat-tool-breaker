@@ -1,0 +1,34 @@
+# repeat-tool-breaker — profile mounting snippet
+#
+# Works as a `dsh --profile <name> --patch <this file>` overlay, or merged into a
+# profile's own cordis.patch.yml. Adding a brand-new plugin requires the
+# `- insert:` list form (a flat `- id:` entry is a RECONFIG of an already-present
+# id and will report "not found" if the plugin isn't in the composed tree).
+# `name` may be an absolute path to this index.js (dev loop) or, when installed
+# into the profile, the package specifier `dsh-repeat-tool-breaker`.
+- insert:
+    - id: repeat-tool-breaker
+      name: /ABS/PATH/dsh-repeat-tool-breaker/index.js
+      config:
+        denyAfter: 2          # identical (tool + canonical args) call #2 is denied (>=2)
+        warnAfter: 1          # soft advisory the run before each deny (>=1)
+        registerAdvisory: true
+        exclude:
+          - todo_write        # never count/reset these tools (include/exclude are *-wildcards)
+        include: []           # non-empty = ONLY these tools are tracked
+        readTools:
+          - read
+          - Read
+          - read_file
+          - read-file
+          - file-read
+          - fs-read
+        matchReadBySubstring: true
+        pathAliases:
+          - path
+          - filePath
+          - file
+          - target_file
+        maxSamePath: 3
+        previewChars: 400
+        resultPreviewChars: 800
