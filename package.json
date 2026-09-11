@@ -1,6 +1,6 @@
 {
   "name": "dsh-repeat-tool-breaker",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Hard break on repeated identical tool calls: a synchronous ctx.tools.guard monotonic gate that denies the 2nd identical (tool name + canonical arguments) call per agent, with an optional same-path read guard and advisory first-repeat warning.",
   "keywords": [
     "dsh",

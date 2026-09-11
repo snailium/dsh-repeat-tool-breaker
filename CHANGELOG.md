@@ -5,6 +5,18 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-11
+
+### Changed
+
+- Publishing runs through the `Publish to npm` GitHub Actions workflow using
+  **npm Trusted Publishing (OIDC)** — no long-lived npm token is required. The
+  workflow upgrades the npm CLI first, because Trusted Publishing needs npm
+  >= 11.5.1 while Node 22 bundles an older one. A repository `NPM_TOKEN` secret is
+  still honoured as a fallback when trusted publishing is not configured.
+- README: npm badge, install instructions for the published package, and the
+  corrected advisory-tier documentation.
+
 ## [0.1.1] - 2026-09-11
 
 ### Fixed
@@ -47,6 +59,7 @@ All notable changes to this project are documented here. This project adheres to
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/snailium/dsh-repeat-tool-breaker/releases/tag/v0.1.0

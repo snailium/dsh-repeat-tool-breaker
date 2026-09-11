@@ -1,11 +1,12 @@
 name: Publish to npm
 
 # Manual-only: nothing publishes as a side effect of a normal push or release.
-# Provide the credential one of two ways:
-#   1. Repository secret NPM_TOKEN (npm access token) — the simplest bootstrap.
-#   2. npm Trusted Publishing (OIDC): configure this repo + this workflow filename
-#      as a trusted publisher on the npm package page, then leave NPM_TOKEN unset.
-#      `id-token: write` below is what OIDC needs.
+#
+# Auth: npm Trusted Publishing (OIDC) is the preferred path and needs no secret —
+# configure this repository + this workflow filename as a trusted publisher on the
+# npm package settings page, and GitHub mints a short-lived OIDC token per run
+# (`id-token: write` below). A repository secret `NPM_TOKEN` is still honoured as
+# a fallback for environments where trusted publishing is not set up.
 on:
   workflow_dispatch:
     inputs:
@@ -28,7 +29,14 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted Publishing (OIDC) requires npm >= 11.5.1. The npm bundled with
+      # Node 22 is older, so upgrade the CLI explicitly rather than relying on
+      # whatever the runner happens to ship.
+      - name: Ensure an npm CLI that supports Trusted Publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
 
       - name: Test
         run: npm test
@@ -44,14 +52,22 @@ jobs:
           fi
           echo "About to publish ${NAME}@${VERSION}"
 
+      - name: Configure npm auth
+        run: |
+          set -euo pipefail
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" >> "$HOME/.npmrc"
+            echo "Auth: NPM_TOKEN secret"
+          else
+            echo "Auth: npm Trusted Publishing (OIDC) — no token present"
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Publish
         if: ${{ !inputs.dry-run }}
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Dry run
         if: ${{ inputs.dry-run }}
         run: npm publish --dry-run --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
