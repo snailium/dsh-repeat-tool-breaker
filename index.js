@@ -29,9 +29,12 @@
  * Counting happens in the GUARD for every tracked attempt (the only place that
  * runs for both allowed and denied attempts), and state is committed on allow
  * OR deny at the end of the predicate. `tools/post-execute` only records the
- * rendered result of the settled call (for the deny message quality) and emits
- * an optional advisory when the committed count reaches `warnAfter`; it never
- * increments, which is what keeps the two hooks from double-counting.
+ * rendered result of the settled call (for deny-message quality) and emits an
+ * optional advisory; it never increments, which is what keeps the two hooks
+ * from double-counting. That advisory is deliberately inert unless
+ * `2 <= warnAfter < denyAfter`: a repeat must actually have happened, and the
+ * block must not have happened yet, or the notice would be both misleading and
+ * attached to every ordinary call.
  *
  * This plugin intentionally ships WITHOUT a registration wall: it declares
  * `inject: ['tools']` so cordis activates it only once the ToolRuntime service
@@ -48,7 +51,11 @@ export const inject = ['tools']
 
 const DEFAULTS = Object.freeze({
   denyAfter: 2,
-  warnAfter: 1,
+  // Advisory tier. It is only reachable when `warnAfter < denyAfter`, i.e. when
+  // there is room for a warning BEFORE the block (denyAfter >= 3). With the
+  // default denyAfter=2 the gate blocks on the very first repeat, so the
+  // advisory is inert rather than firing on every ordinary call.
+  warnAfter: 2,
   registerAdvisory: true,
   exclude: ['todo_write'],
   include: [],
@@ -69,9 +76,6 @@ function resolveConfig(config = {}) {
   if (!Number.isInteger(cfg.denyAfter) || cfg.denyAfter < 2) {
     throw new Error('repeat-tool-breaker: `denyAfter` must be an integer >= 2')
   }
-  if (cfg.denyAfter - 1 > Number.MAX_SAFE_INTEGER) {
-    throw new Error('repeat-tool-breaker: `denyAfter` is too large')
-  }
   if (cfg.warnAfter != null && (!Number.isInteger(cfg.warnAfter) || cfg.warnAfter < 1)) {
     throw new Error('repeat-tool-breaker: `warnAfter` must be an integer >= 1 when set')
   }
@@ -79,20 +83,29 @@ function resolveConfig(config = {}) {
     throw new Error('repeat-tool-breaker: `maxSamePath` must be an integer >= 1 when set')
   }
   for (const key of ['exclude', 'include', 'readTools', 'pathAliases']) {
-    if (!Array.isArray(cfg[key]) || cfg[key].some((x) => typeof x !== 'string')) {
+    const value = cfg[key]
+    if (!Array.isArray(value) || value.some((x) => typeof x !== 'string')) {
       throw new Error(`repeat-tool-breaker: \`${key}\` must be an array of strings`)
     }
+    // Copy before freezing so a caller-provided array is never mutated.
+    cfg[key] = Object.freeze([...value])
   }
   for (const key of ['previewChars', 'resultPreviewChars']) {
     if (!Number.isInteger(cfg[key]) || cfg[key] < 1) {
       throw new Error(`repeat-tool-breaker: \`${key}\` must be an integer >= 1`)
     }
   }
-  Object.freeze(cfg.exclude)
-  Object.freeze(cfg.include)
-  Object.freeze(cfg.readTools)
-  Object.freeze(cfg.pathAliases)
   return cfg
+}
+
+/**
+ * Whether the advisory tier can ever fire: a repeat must have happened
+ * (`count >= 2`) and the block must not already have happened
+ * (`count < denyAfter`). Anything else stays silent — emitting a notice on a
+ * non-repeat would inject a misleading message into every ordinary tool call.
+ */
+function advisoryReachable(warnAfter, denyAfter) {
+  return Number.isInteger(warnAfter) && warnAfter >= 2 && warnAfter < denyAfter
 }
 
 /** Normalize a potential `arguments` value into a plain structure. */
@@ -233,7 +246,7 @@ export function apply(ctx, config = {}) {
   }
 
   function warnMessage(name, count) {
-    return `You just ran ${name} with identical arguments ${count} time(s). The next identical call will be hard-blocked. Analyze the latest result and change approach or finish instead of retrying it.`
+    return `You have now run ${name} with identical arguments ${count} times in a row. One more identical call will be hard-blocked. Analyze the latest result and change approach or finish instead of repeating it.`
   }
 
   /**
@@ -291,20 +304,22 @@ export function apply(ctx, config = {}) {
   if (typeof dispose === 'function') teardown.push(dispose)
 
   // Advisory (soft) only — NEVER a deny. Runs after a settled call, records the
-  // rendered result for the deny message and emits a warning when the committed
-  // identical-run count reaches warnAfter. It never increments; the guard owns
+  // rendered result for the deny message, and (only when a warning tier is
+  // actually reachable) emits one notice. It never increments; the guard owns
   // counting.
+  const advisoryEnabled = cfg.registerAdvisory === true && advisoryReachable(cfg.warnAfter, cfg.denyAfter)
   const pf = ctx.on('tools/post-execute', async (exec, result, next) => {
     const agent = exec.agent
     const execName = exec.name
-    if (agent && tracked(execName)) {
+    const watched = Boolean(agent) && tracked(execName)
+    const key = watched ? JSON.stringify([execName, canonicalize(exec.arguments)]) : null
+    if (watched) {
       const st = stateOf(agent)
-      const key = JSON.stringify([execName, canonicalize(exec.arguments)])
       const rendered = renderResult(result)
       if (st.sig === key && rendered) st.lastResult = rendered
       // Also keep the rendered result for the read path it covered, so a later
       // same-path read uses the exact previous contents in its deny message.
-      if (isReadTool(execName) && rendered) {
+      if (rendered && isReadTool(execName)) {
         const path = pathOf(exec.arguments)
         if (path) {
           const entry = st.pathReads.get(path)
@@ -313,22 +328,19 @@ export function apply(ctx, config = {}) {
       }
     }
     const downstream = await next()
-    if (!cfg.registerAdvisory) return downstream
-    // Deliver the advisory exactly once per ascent through warnAfter.
-    let noticeText = null
-    let summary = null
-    if (agent && tracked(execName)) {
-      const st = byAgent.get(agent)
-      if (st && st.sig === JSON.stringify([execName, canonicalize(exec.arguments)]) && st.count === cfg.warnAfter) {
-        noticeText = warnMessage(execName, st.count)
-        summary = `${execName} × ${st.count}`
-      }
-    }
-    if (!noticeText) return downstream
+    if (!advisoryEnabled || !watched) return downstream
+    const st = byAgent.get(agent)
+    // Only a genuine repeat that is still short of the block gets a notice.
+    if (!st || st.sig !== key || st.count !== cfg.warnAfter) return downstream
     const message = {
       role: 'user',
-      content: [{ type: 'text', text: noticeText }],
-      source: { kind: 'plugin', plugin: 'repeat-tool-breaker', form: 'notice', summary },
+      content: [{ type: 'text', text: warnMessage(execName, st.count) }],
+      source: {
+        kind: 'plugin',
+        plugin: 'repeat-tool-breaker',
+        form: 'notice',
+        summary: `${execName} × ${st.count}`,
+      },
     }
     const prepend = (ctxArr) => [message, ...(ctxArr ?? [])]
     if (downstream.kind === 'block') {

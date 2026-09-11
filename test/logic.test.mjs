@@ -188,6 +188,84 @@ for (let i = 1; i <= cap + 1; i++) {
   }
 }
 
+// --- Scenario 9: NO advisory on ordinary (non-repeated) calls ---
+// Regression: an advisory that fires whenever count === warnAfter used to attach
+// a "you repeated this" notice to EVERY distinct call, polluting context.
+{
+  const inst = makeCtx()
+  apply(inst.fakeCtx, {})
+  const advised = (res) =>
+    Boolean(res.decision && res.decision.additionalContexts && res.decision.additionalContexts.length)
+  const fresh = [
+    ['read', { path: 'x.ts' }],
+    ['read', { path: 'y.ts' }],
+    ['bash', { command: 'ls' }],
+    ['grep', { pattern: 'needle' }],
+  ]
+  for (const [tool, args] of fresh) {
+    const res = await runCall(
+      inst.fakeCtx,
+      inst.listeners,
+      inst.guardFnRef,
+      makeFakeExec(tool, args, 'D4'),
+      makeFakeResult('ok'),
+    )
+    check(`no advisory on a fresh ${tool} call`, res.verdict === 'allowed' && !advised(res))
+  }
+}
+
+// --- Scenario 10: advisory tier when there is room before the block ---
+{
+  const inst = makeCtx()
+  apply(inst.fakeCtx, { denyAfter: 3, warnAfter: 2 })
+  const advisedCount = (res) =>
+    res.decision && res.decision.additionalContexts ? res.decision.additionalContexts.length : 0
+
+  let res = await runCall(
+    inst.fakeCtx,
+    inst.listeners,
+    inst.guardFnRef,
+    makeFakeExec('read', { path: 'w.ts' }, 'E5'),
+    makeFakeResult('contents w'),
+  )
+  check('denyAfter=3: read#1 allowed, no advisory yet', res.verdict === 'allowed' && advisedCount(res) === 0)
+
+  res = await runCall(
+    inst.fakeCtx,
+    inst.listeners,
+    inst.guardFnRef,
+    makeFakeExec('read', { path: 'w.ts' }, 'E5'),
+    makeFakeResult('contents w'),
+  )
+  check('denyAfter=3: read#2 (first repeat) allowed AND advised', res.verdict === 'allowed' && advisedCount(res) === 1)
+
+  res = await runCall(
+    inst.fakeCtx,
+    inst.listeners,
+    inst.guardFnRef,
+    makeFakeExec('read', { path: 'w.ts' }, 'E5'),
+    makeFakeResult('contents w'),
+  )
+  check('denyAfter=3: read#3 DENIED', res.verdict === 'denied')
+}
+
+// --- Scenario 11: invalid config fails loud, and caller arrays are not mutated ---
+{
+  const inst = makeCtx()
+  let threw = false
+  try {
+    apply(inst.fakeCtx, { denyAfter: 1 })
+  } catch {
+    threw = true
+  }
+  check('denyAfter < 2 throws at load', threw)
+
+  const mine = ['custom_tool']
+  const inst2 = makeCtx()
+  apply(inst2.fakeCtx, { exclude: mine })
+  check('caller-provided exclude array is left unfrozen', Object.isFrozen(mine) === false)
+}
+
 dispose()
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

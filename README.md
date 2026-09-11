@@ -98,7 +98,7 @@ defers `apply` until the real `ToolRuntime` service is live, at which point
       name: /ABSOLUTE/PATH/dsh-repeat-tool-breaker/index.js
       config:
         denyAfter: 2          # identical (tool + canonical args) call #2 is denied (>=2)
-        warnAfter: 1          # soft advisory the run before each deny (>=1)
+        warnAfter: 2          # advisory tier; inert unless 2 <= warnAfter < denyAfter
         registerAdvisory: true
         exclude: [todo_write] # never count/reset these tools (include/exclude are *-wildcards)
         include: []           # non-empty = ONLY these tools are tracked
@@ -117,6 +117,24 @@ that isn't yet in the composed tree.)
 Here `name` is an absolute POSIX path to this directory's `index.js` (dev/overlay
 loop). When the package is installed into a profile it can instead be the package
 specifier `dsh-repeat-tool-breaker`.
+
+### About the advisory tier
+
+The `warnAfter` notice is deliberately **inert unless `2 <= warnAfter < denyAfter`**:
+
+- `warnAfter` must be at least 2, because a notice only makes sense once a repeat
+  has actually happened;
+- it must be below `denyAfter`, because at `denyAfter` the call is blocked and the
+  deny reason already explains why.
+
+With the default `denyAfter: 2` the gate blocks on the very first repeat, so there
+is no room for a separate pre-block nudge and nothing is emitted. Set
+`denyAfter: 3, warnAfter: 2` to get one warning after the first repeat and the
+block on the second.
+
+This matters: an advisory keyed only on `count === warnAfter` would fire on every
+*ordinary* tool call (every fresh call starts a new run at count 1), attaching a
+misleading "you repeated this" message to each one.
 
 ## Development loop (dependency-free)
 
@@ -160,7 +178,7 @@ same call; and the same-path cap bounds varying-argument re-reads of one file.
 
 **Verified**
 
-- **Deterministic guard-logic suite** (`npm test`) — 20 assertions over a stable
+- **Deterministic guard-logic suite** (`npm test`) — 29 assertions over a stable
   live `Agent` object, covering the allow/deny matrix, canonicalization, tool
   exclusion, per-agent isolation, and the user-message reset. Runs in CI on
   Node 20 and 22 with no model or endpoint.
@@ -190,7 +208,13 @@ the gate is a monotonic safety net, not a semantic deduplicator.
   records the rendered result (for a high-quality deny message) and may emit the
   `warnAfter` advisory through `additionalContexts`; it **never increments**.
   That single counting locus is what prevents the guard/post-execute double count
-  the naive design smuggles in when both update the chain.
+  the naive design smuggles in when both update the chain. The advisory is
+  additionally gated on being reachable — see
+  [About the advisory tier](#about-the-advisory-tier).
+- **Only consecutive repeats are caught.** The run resets when a call with a
+  different signature arrives, so the pattern `A, B, A, B, …` never trips the
+  gate. That is intentional (a consecutive-run detector, not a call counter), and
+  it is why the deny message says "in a row".
 - **Fail loud in `apply`**: no schemastery `Config` export (keeping index.js
   dependency-free is deliberate — `cordis.resolveConfig` passes config through
   unchanged when a plugin exports no `Config`), but every load-bearing invariant
