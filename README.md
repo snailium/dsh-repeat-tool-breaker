@@ -177,6 +177,38 @@ then its 2nd identical denied; `todo_write` repeated twice never denied and neve
 resets an unrelated chain; per-agent isolation; user-message reset re-allows a
 same call; and the same-path cap bounds varying-argument re-reads of one file.
 
+## Releasing
+
+Publishing runs through `.github/workflows/publish.yml`, which is
+`workflow_dispatch`-only — nothing is published as a side effect of a push or a
+release, and the job refuses to republish a version that already exists.
+
+```bash
+# 1. bump the version and update CHANGELOG.md, commit, push
+# 2. trigger the release
+gh workflow run publish.yml -f dry-run=false
+```
+
+Authentication uses **npm Trusted Publishing (OIDC)**: the workflow needs
+`id-token: write` (already set) and a matching trusted-publisher connection on the
+npm package page — repository `snailium/dsh-repeat-tool-breaker`, workflow
+filename `publish.yml`, environment empty. No long-lived token is required, and
+provenance is generated automatically.
+
+Two things that will save you time:
+
+- **Allow the right action.** A trusted-publisher connection created after
+  2026-09-03 defaults to allowing only `npm stage publish`. If direct
+  `npm publish` is not selected under "Allowed actions", the registry answers
+  `403 ... OIDC permission denied for this action`. Connections cannot be edited:
+  delete and recreate.
+- **Debugging a 403.** Run `gh workflow run publish.yml -f dry-run=true -f debug-oidc=true`
+  to print the OIDC claims npm authorises against (`repository`,
+  `job_workflow_ref`, `aud`, …) and compare them with the connection's fields.
+
+The npm CLI must be >= 11.5.1 and Node >= 22.14.0 for OIDC; the workflow upgrades
+the npm CLI explicitly because Node 22 bundles an older one.
+
 ## Scope and verification status
 
 **Verified**

@@ -7,6 +7,13 @@ name: Publish to npm
 # npm package settings page, and GitHub mints a short-lived OIDC token per run
 # (`id-token: write` below). A repository secret `NPM_TOKEN` is still honoured as
 # a fallback for environments where trusted publishing is not set up.
+#
+# Gotcha: a trusted publisher connection created after 2026-09-03 defaults to
+# allowing only `npm stage publish`. Direct `npm publish` must be selected
+# explicitly in the connection's "Allowed actions", or the registry answers
+# `403 ... OIDC permission denied for this action`. Connections cannot be edited
+# — delete and recreate. Run this workflow with `debug-oidc` to print the OIDC
+# claims npm matches against.
 on:
   workflow_dispatch:
     inputs:
