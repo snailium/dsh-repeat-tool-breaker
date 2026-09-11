@@ -1,6 +1,7 @@
 # dsh-repeat-tool-breaker
 
 [![CI](https://github.com/snailium/dsh-repeat-tool-breaker/actions/workflows/ci.yml/badge.svg)](https://github.com/snailium/dsh-repeat-tool-breaker/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/dsh-repeat-tool-breaker.svg)](https://www.npmjs.com/package/dsh-repeat-tool-breaker)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 
@@ -40,11 +41,13 @@ dsh --profile <name> --patch /path/to/overlay.yml --dump-config   # resolve chec
 dsh --profile <name> --patch /path/to/overlay.yml "reply ok"      # real apply run
 ```
 
-**Option B — install into the profile** (so `name` can be the package specifier):
+**Option B — install from npm into the profile** (so `name` can be the package
+specifier):
 
 ```bash
+dsh plugin --profile <name> add dsh-repeat-tool-breaker
+# or install a local checkout instead of the published package:
 dsh plugin --profile <name> add /path/to/dsh-repeat-tool-breaker
-# or, once published: dsh plugin --profile <name> add dsh-repeat-tool-breaker
 ```
 
 `dsh plugin add` forwards to `pnpm` inside the profile directory, so the plugin
