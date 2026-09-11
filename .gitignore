@@ -1,6 +1,9 @@
 # Dependencies (only if you install the plugin into a profile with pnpm/npm)
 node_modules/
 
+# Build/publish artifacts
+*.tgz
+
 # Logs
 *.log
 npm-debug.log*
