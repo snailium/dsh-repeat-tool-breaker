@@ -5,6 +5,34 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-12
+
+### Fixed
+
+- **The package now declares `dsh.bundle`, so the shipped `cordis.patch.yml` is
+  actually reachable.** The file was already in `files`, but with no
+  `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }` manifest, listing
+  `dsh-repeat-tool-breaker` in a profile's `dsh.profile.bundles` failed the boot
+  with `dsh: profile bundle "dsh-repeat-tool-breaker" declares no dsh.bundle in
+  its package.json` — an unhandled throw from `loadProfile`, not a soft warning.
+  The bundled patch was dead weight: unreachable through the bundle path and
+  usable only as a copy-paste `--patch` overlay.
+
+### Changed
+
+- `cordis.patch.yml` is now a real bundle layer: it mounts the plugin row by its
+  **package specifier** (`name: 'dsh-repeat-tool-breaker'`) instead of the
+  `/ABS/PATH/index.js` placeholder, and it carries **no `config:`** — so the
+  plugin's own fail-loud `DEFAULTS` apply and a profile that wants different
+  values restates them in its own patch layer. The previous `warnAfter: 1` in the
+  snippet was inert anyway (the advisory needs `2 <= warnAfter < denyAfter`), so
+  behaviour for anyone who copy-pasted it is unchanged.
+- `cordis.patch.yml` comments document both install paths (list as a bundle vs.
+  mount by hand / `--patch`), including the fact that a patch *replaces* a row's
+  whole `config` rather than merging, and that an absolute path is still the way
+  to mount a checkout that is not installed into the profile.
+- README: bundle-install path documented alongside the manual mount row.
+
 ## [0.1.2] - 2026-09-11
 
 ### Changed
@@ -59,7 +87,8 @@ All notable changes to this project are documented here. This project adheres to
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/snailium/dsh-repeat-tool-breaker/releases/tag/v0.1.0

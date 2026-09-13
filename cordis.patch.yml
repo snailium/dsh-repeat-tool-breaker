@@ -1,34 +1,63 @@
-# repeat-tool-breaker — profile mounting snippet
+# dsh-repeat-tool-breaker — profile bundle patch.
 #
-# Works as a `dsh --profile <name> --patch <this file>` overlay, or merged into a
-# profile's own cordis.patch.yml. Adding a brand-new plugin requires the
-# `- insert:` list form (a flat `- id:` entry is a RECONFIG of an already-present
-# id and will report "not found" if the plugin isn't in the composed tree).
-# `name` may be an absolute path to this index.js (dev loop) or, when installed
-# into the profile, the package specifier `dsh-repeat-tool-breaker`.
+# This file is the package's `dsh.bundle.patch` layer, declared in package.json:
+#
+#   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+#
+# It is applied as ONE insert over the empty profile root, BEFORE the profile's
+# own cordis.patch.yml. Two supported ways to use it:
+#
+# 1. As a profile BUNDLE (recommended — no hand-written mount row):
+#
+#      dsh plugin --profile <name> add dsh-repeat-tool-breaker
+#
+#    then list it in the profile manifest's ordered bundle list
+#    (`dsh.profile.bundles` in `$DSH_HOME/profiles/<name>/package.json`):
+#
+#      "dsh": { "profile": { "bundles": [
+#        "@deepseek-ai/dsh-base",
+#        "@deepseek-ai/dsh-web-app",
+#        "dsh-repeat-tool-breaker"
+#      ] } }
+#
+#    Naming a bundle-less package as a layer is a hard boot error, so the
+#    `dsh.bundle` manifest above is required for this path.
+#
+# 2. As a `--patch` overlay or a hand-merged row in the profile's own
+#    cordis.patch.yml. Adding a brand-new plugin requires the `- insert:` list
+#    form — a flat `- id:` entry is a RECONFIG of an already-present id and
+#    reports "not found" when the plugin is not yet in the composed tree.
+#
+# In both paths the row below carries NO `config`, so the plugin's own
+# fail-loud DEFAULTS apply (denyAfter 2, exclude [todo_write],
+# readTools [read, Read, read_file, …], maxSamePath 3). Reconfigure the row by
+# id from the profile's own patch layer — a patch replaces the targeted row's
+# whole `config` rather than merging into it, so restate every field you want:
+#
+#   - id: repeat-tool-breaker
+#     config:
+#       denyAfter: 3          # allow one repeat, deny the 3rd identical call
+#       warnAfter: 2          # advisory fires only when 2 <= warnAfter < denyAfter
+#       registerAdvisory: true
+#       exclude:
+#         - todo_write        # never counted, never resets the chain
+#       include: []           # non-empty = ONLY these tools are tracked
+#       readTools:
+#         - read
+#         - Read
+#         - read_file
+#       matchReadBySubstring: true
+#       pathAliases:
+#         - path
+#         - filePath
+#         - file
+#       maxSamePath: 3
+#       previewChars: 400
+#       resultPreviewChars: 800
+#
+# Using an absolute path as `name` (e.g. /path/to/index.js) also works and is
+# the way to mount a CHECKOUT before it is installed into the profile.
+
 - insert:
     - id: repeat-tool-breaker
-      name: /ABS/PATH/dsh-repeat-tool-breaker/index.js
-      config:
-        denyAfter: 2          # identical (tool + canonical args) call #2 is denied (>=2)
-        warnAfter: 1          # soft advisory the run before each deny (>=1)
-        registerAdvisory: true
-        exclude:
-          - todo_write        # never count/reset these tools (include/exclude are *-wildcards)
-        include: []           # non-empty = ONLY these tools are tracked
-        readTools:
-          - read
-          - Read
-          - read_file
-          - read-file
-          - file-read
-          - fs-read
-        matchReadBySubstring: true
-        pathAliases:
-          - path
-          - filePath
-          - file
-          - target_file
-        maxSamePath: 3
-        previewChars: 400
-        resultPreviewChars: 800
+      name: 'dsh-repeat-tool-breaker'

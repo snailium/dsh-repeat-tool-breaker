@@ -28,9 +28,45 @@ compose: the breaker is the hard gate, the reminder is the soft nudge.
 
 ## Install
 
-**Option A — mount from a path (dev loop, no install):** clone this repo and add an
-`insert` entry to a profile (see [Configuration](#configuration) for the full
-snippet), then boot with the overlay:
+### Option A — list it as a profile bundle (recommended)
+
+The package declares `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`, so
+it is a first-class profile bundle: no hand-written mount row is needed.
+
+```bash
+dsh plugin --profile <name> add dsh-repeat-tool-breaker
+```
+
+Then add it to the profile's ordered bundle list
+(`$DSH_HOME/profiles/<name>/package.json`):
+
+```json
+"dsh": {
+  "profile": {
+    "bundles": [
+      "@deepseek-ai/dsh-base",
+      "@deepseek-ai/dsh-web-app",
+      "dsh-repeat-tool-breaker"
+    ]
+  }
+}
+```
+
+The bundle's patch layer mounts the plugin with **no `config:`**, so the
+fail-loud defaults really are the defaults. To tune it, reconfigure the row by
+id from the *profile's own* `cordis.patch.yml` — remember a patch replaces the
+targeted row's whole `config` instead of merging into it, so restate every field
+you want (see [Configuration](#configuration)).
+
+Naming a bundle-less package in `dsh.profile.bundles` is a **hard boot error**
+(`declares no dsh.bundle in its package.json`), which is why the manifest above
+is required for this path.
+
+### Option B — mount from a path (dev loop, no install)
+
+Clone this repo and add an `insert` entry to a profile (see
+[Configuration](#configuration) for the full snippet), then boot with the
+overlay:
 
 ```bash
 git clone https://github.com/snailium/dsh-repeat-tool-breaker.git
@@ -41,18 +77,19 @@ dsh --profile <name> --patch /path/to/overlay.yml --dump-config   # resolve chec
 dsh --profile <name> --patch /path/to/overlay.yml "reply ok"      # real apply run
 ```
 
-**Option B — install from npm into the profile** (so `name` can be the package
-specifier):
+Here `name` must be an **absolute path** to this checkout's `index.js`, because
+the package is not resolvable from the profile directory.
+
+### Option C — install from npm, mount by hand
 
 ```bash
 dsh plugin --profile <name> add dsh-repeat-tool-breaker
-# or install a local checkout instead of the published package:
-dsh plugin --profile <name> add /path/to/dsh-repeat-tool-breaker
 ```
 
-`dsh plugin add` forwards to `pnpm` inside the profile directory, so the plugin
-becomes a normal profile dependency and the `files`/`exports` entries in
-`package.json` control what ships.
+`dsh plugin add` forwards to the profile's package manager, so the plugin becomes
+a normal profile dependency and its `name` resolves to the package specifier
+`dsh-repeat-tool-breaker` from a hand-written `insert` row. The `files`/`exports`
+entries in `package.json` control what ships.
 
 ## How it stops a loop
 
@@ -90,15 +127,20 @@ injects a softer "you repeated X" message after the call already executed.
 
 ## Configuration
 
-Mount via a `--patch` overlay or a profile's `cordis.patch.yml`. The plugin
-exports an object form (`{ name, inject: ['tools'], apply }`); `inject: ['tools']`
-defers `apply` until the real `ToolRuntime` service is live, at which point
-`ctx.tools.guard` is the genuine method.
+Mount via a profile bundle (Option A above — no `config:` in the bundle layer,
+defaults apply), a `--patch` overlay, or a profile's `cordis.patch.yml`. The
+plugin exports an object form (`{ name, inject: ['tools'], apply }`);
+`inject: ['tools']` defers `apply` until the real `ToolRuntime` service is live,
+at which point `ctx.tools.guard` is the genuine method.
+
+A hand-written mount row looks like this (`name` is the package specifier once the
+plugin is installed into the profile, or an absolute path to `index.js` when
+mounting a bare checkout):
 
 ```yaml
 - insert:
     - id: repeat-tool-breaker
-      name: /ABSOLUTE/PATH/dsh-repeat-tool-breaker/index.js
+      name: dsh-repeat-tool-breaker
       config:
         denyAfter: 2          # identical (tool + canonical args) call #2 is denied (>=2)
         warnAfter: 2          # advisory tier; inert unless 2 <= warnAfter < denyAfter
