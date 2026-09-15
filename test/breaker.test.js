@@ -13,7 +13,6 @@ import {
   canonical,
   extractSink,
   extractUrls,
-  firstPathArg,
   firstVerb,
   normUrl,
   omitIgnored,
@@ -317,9 +316,7 @@ test('T9e: tokenize honours quotes and escapes', () => {
   ])
 })
 
-test('T9f: firstPathArg and limitFor', () => {
-  assert.equal(firstPathArg({ file_path: '/a', path: '/b' }, ['path', 'file_path']), '/b')
-  assert.equal(firstPathArg({}, cfg.pathAliases), null)
+test('T9f: limitFor resolves exact keys, kinds, and a disabled cap', () => {
   assert.equal(limitFor('net:a/b', cfg.limits), CAP)
   assert.equal(limitFor('site:canada.ca', cfg.limits), 3)
   assert.equal(limitFor('family:http-fetch', cfg.limits), 6)
@@ -512,7 +509,10 @@ test('T14: shipped defaults are the v2 table', () => {
     'verb:wget': 6,
   })
   assert.deepEqual(DEFAULTS.exclude, ['todo_write'])
-  assert.ok(DEFAULTS.pathAliases.includes('file_path'), "dsh's own file tools use file_path")
+  // Removed in 0.2.4: the key only ever fed the path-only file fingerprints, which
+  // 0.2.2 deleted. A config that still lists it is accepted and inert.
+  assert.ok(!('pathAliases' in DEFAULTS), 'pathAliases must not come back as dead config')
+  assert.equal(limitFor('writepath:/w', cfg.limits), Number.POSITIVE_INFINITY)
 })
 
 test('T14b: DOCUMENTED BEHAVIOR — the volume cap on http fetching is a backstop, not a 4-call wall', () => {

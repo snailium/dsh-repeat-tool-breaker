@@ -5,6 +5,22 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-09-15
+
+### Removed
+
+- The `pathAliases` config key, and the `firstPathArg` helper it fed. Both became
+  dead in 0.2.2, when the path-only `readpath`/`writepath` fingerprints were
+  removed — the key has had no reader since, so the README was documenting a knob
+  that did nothing. A config that still lists `pathAliases` is accepted and
+  ignored, so no consumer has to change anything.
+
+### Fixed
+
+- The bundle patch's header comment still advertised the **original** v2 cap table
+  (`exact`/`cmd`/`net`/`sink` 2, `family`/`verb` 4, plus `readpath`/`writepath`),
+  three releases after those values changed. It now states the shipped table.
+
 ### Added
 
 - `test/compat/` — a full-boot compatibility harness (scripted mock model + a
@@ -228,7 +244,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.0...v0.2.1

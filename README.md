@@ -189,7 +189,6 @@ at which point `ctx.tools.guard` is the genuine method.
         resultPreviewChars: 800     # truncation for the quoted previous result
         exclude: [todo_write]       # never counted, never resets (*-wildcards ok)
         include: []                 # non-empty = ONLY these names/patterns count
-        pathAliases: [path, file_path, filePath, file, target_file]
         ignoreArgs:                 # merged over the defaults
           '*': [description, timeoutMs, run_in_background, justification, reason, title, comment]
           bash: [description, timeoutMs, run_in_background, justification]
@@ -211,9 +210,9 @@ Merge semantics, which matter when retuning:
 - `ignoreArgs`, `hostAliases` and `limits` merge **one level deep** over the
   defaults, so you can add one host alias or retune one cap without restating the
   table.
-- Scalars replace; arrays (`exclude`, `include`, `pathAliases`) **replace
-  outright** — a `pathAliases:` that omits `file_path` silently disables the
-  read/write path guards, because that is the key dsh's own file tools use.
+- Scalars replace; the arrays `exclude` and `include` **replace outright**, so a
+  two-entry `exclude:` list is the whole list, not an addition to the default
+  `todo_write` entry.
 - A patch replaces the targeted row's whole `config`, so `config` keys are not
   inherited from the bundle layer.
 
@@ -282,8 +281,8 @@ If instead you want the original, more aggressive table back, restate it:
 
 ### Deliberate deviations from the v2 specification
 
-All four are consequences of running the plugin against a live model on the
-reference deployment; each is reversible from config alone.
+All of these came out of running the plugin against a live model on the reference
+deployment.
 
 1. **No path-only counter for file tools at all.** The spec folded reads and
    writes of one path into a single `sink:` counter, which denies the second half
@@ -294,9 +293,12 @@ reference deployment; each is reversible from config alone.
    actions are identified by `exact:` alone, which is position-aware by
    construction. `sink:` still means what §3.6 defined it as: where a *shell
    command* writes its bytes.
-2. **`file_path` added to `pathAliases`.** The spec's list (`path`, `filePath`,
-   `file`, `target_file`) does not include the key dsh's own `read`/`write`/`edit`
-   tools actually use, which would have left every file read ungated.
+2. **`pathAliases` is gone (0.2.4).** The spec's list (`path`, `filePath`,
+   `file`, `target_file`) had to gain `file_path`, the key dsh's own file tools
+   actually use — but that key existed only to feed the path-only `readpath`/
+   `writepath` fingerprints, which 0.2.2 removed. 0.2.4 deletes the inert key and
+   its `firstPathArg` helper, so the documented configuration is exactly what the
+   code reads. A config that still lists `pathAliases` is accepted and ignored.
 3. **Generic sinks are not fingerprints.** `curl -s -o /dev/null -w '%{http_code}'`
    is the idiomatic way to ask for a status code, and treating `/dev/null` as
    action identity made four *different* URLs collide on `sink:/dev/null` starting
