@@ -5,6 +5,27 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-15
+
+### Changed
+
+- **The action-identity caps are 3, not 2** — `exact`, `cmd`, `net` and `sink`.
+  A cap of 2 has no room for the most common *non-loop* repeat: the first attempt
+  fails for a reason unrelated to looping (a precondition the harness enforces, a
+  DNS failure) and the correct response is to retry the same call. At 2 that
+  retry is precisely what gets blocked, so the only way forward is to change the
+  call cosmetically — the behaviour this plugin exists to stop.
+
+  The alternative considered was refunding the budget of a guard-allowed call
+  whose body failed. It was rejected: it makes the guard depend on how a failure
+  is reported, and a call that fails *every* time would refund itself forever and
+  never be blocked. Raising the cap is stateless, depends on nothing, and still
+  stops a failing loop on the third attempt.
+
+  Net effect: one extra attempt per action before the hard break. `T2b` pins the
+  retry case; the rest of the suite now expresses its expectations in terms of the
+  cap (`const CAP = cfg.limits.exact`) instead of hard-coding 2.
+
 ## [0.2.2] - 2026-09-15
 
 ### Changed
@@ -201,7 +222,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.3...v0.2.0

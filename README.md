@@ -29,9 +29,9 @@ In one paragraph, the v1 → v2 story:
 
 | | Loop | Caught by |
 |---|---|---|
-| **A** | the same `read`/`write`/`bash` arguments again, verbatim | `exact:` (2) |
-| **B** | `description: '1st'/'2nd'/'3rd'`, `command` unchanged | decoy arguments are stripped **before** fingerprinting, so the calls become byte-identical → `exact:` (2) |
-| **C** | `curl --max-time 60 open-data.canada.ca` ↔ `curl --max-time 30 open.canada.ca` | `net:` (2) after host-alias folding and query stripping, plus `sink:` (2) and `cmd:` (2) after volatile-flag stripping |
+| **A** | the same `read`/`write`/`bash` arguments again, verbatim | `exact:` (3) |
+| **B** | `description: '1st'/'2nd'/'3rd'`, `command` unchanged | decoy arguments are stripped **before** fingerprinting, so the calls become byte-identical → `exact:` (3) |
+| **C** | `curl --max-time 60 open-data.canada.ca` ↔ `curl --max-time 30 open.canada.ca` | `net:` (3) after host-alias folding and query stripping, plus `sink:` (3) and `cmd:` (3) after volatile-flag stripping |
 
 The sibling official plugin `@deepseek-ai/dsh-repeat-tool-reminder` (advisory, at
 3/5/8 repeats) may stay on — this breaker refuses earlier, so the two compose:
@@ -196,10 +196,10 @@ at which point `ctx.tools.guard` is the genuine method.
         hostAliases:                # merged over the defaults
           open-data.canada.ca: open.canada.ca
         limits:                     # merged over the defaults; null = uncapped
-          exact: 2
-          cmd: 2
-          net: 2
-          sink: 2
+          exact: 3
+          cmd: 3
+          net: 3
+          sink: 3
           site: 3
           'family:http-fetch': 6
           'verb:curl': 6
@@ -232,9 +232,15 @@ that isn't yet in the composed tree.)
 
 The table mixes *precise* caps with *broad* ones, and the difference matters:
 
-- **precise, resource-scoped, cap 2**: `exact`, `cmd`, `net`, `sink`.
-  These fire only when the same action actually happens again. They are what
-  catches loops, and they should stay at 2.
+- **precise, resource-scoped, cap 3**: `exact`, `cmd`, `net`, `sink`. These fire
+  only when the same action actually happens again, and they are what catches
+  loops. They are 3 rather than 2 because a cap of 2 leaves no room for the most
+  common *non-loop* repeat: the first attempt fails for a reason that has nothing
+  to do with looping — a precondition the harness enforces, a DNS failure — and
+  the correct response is to retry the same call. At 2 that retry is what gets
+  blocked, and the only way forward is to cosmetically change the call, which is
+  exactly what this plugin exists to stop. At 3 the retry fits, while a call that
+  keeps failing is still stopped on its third attempt.
 - **not counter-based at all**: file operations. There is no `readpath` or
   `writepath` limit. A file action is identified by its **position** through
   `exact:` — the same file at the same offset, or the same replacement string, is
@@ -344,6 +350,8 @@ caught v1 — or that caught v2's own defaults:
   contain neither the decoy text nor the `timeoutMs` value;
 - the deny path is asserted to be reached for host-spelling ping-pong whose
   `exact:` fingerprints differ;
+- one failed attempt is asserted to leave room for the identical retry (`T2b`),
+  while a call that keeps failing is still blocked;
 - four *different* URLs writing to `/dev/null` are asserted to all be allowed, and
   a denied call is asserted **not** to spend `net:` budget on the URL it never
   fetched.

@@ -50,6 +50,24 @@ function run(tracker, exec, config = cfg) {
 
 const hit = (hits, prefix) => hits.some((entry) => entry.fp.startsWith(prefix))
 
+/**
+ * The cap the shipped defaults apply to action identity (`exact`/`cmd`/`net`/
+ * `sink`). Assertions are written in terms of it — "the cap-th identical call is
+ * denied, the earlier ones are allowed" — so retuning the cap does not require
+ * rewriting every test.
+ */
+const CAP = cfg.limits.exact
+
+/** Run one call until it is denied; returns that deny result and how long it took. */
+function runUntilDenied(tracker, exec, max = CAP + 2) {
+  let last
+  for (let i = 0; i < max; i += 1) {
+    last = run(tracker, exec)
+    if (last.hits.length > 0) return { ...last, attempts: i + 1 }
+  }
+  return { ...last, attempts: max }
+}
+
 // ---------------------------------------------------------------------------
 // T1 — host ping-pong with a churning --max-time, same output file
 // ---------------------------------------------------------------------------
@@ -63,18 +81,20 @@ test('T1: curl ping-pong between alias hosts is caught by net/sink, not by exact
     description: '2nd',
   })
 
-  const r1 = run(tracker, first)
-  assert.deepEqual(r1.hits, [], 'the first call must always be allowed')
   assert.notEqual(exactFingerprint(first, cfg), exactFingerprint(second, cfg), 'exact must NOT match: this is the v1 blind spot')
 
-  const r2 = run(tracker, second)
-  assert.ok(hit(r2.hits, 'net:'), `expected a net: hit, got ${JSON.stringify(r2.hits)}`)
-  assert.ok(hit(r2.hits, 'sink:'), 'expected a sink: hit')
-
-  for (const call of [first, second]) {
-    const r = run(tracker, call)
-    assert.ok(r.hits.length > 0, 'the 3rd and 4th calls must be denied')
+  // The two spellings alternate, so no two consecutive calls share their
+  // arguments: v1's consecutive-identical counter saw a new action every round.
+  // v2 counts one net: and one sink: per fetch of the same resource, so the
+  // cap-th round trip is denied however the host is spelled.
+  const alternation = [first, second]
+  let last
+  for (let i = 0; i < CAP; i += 1) {
+    last = run(tracker, alternation[i % 2])
+    if (i < CAP - 1) assert.deepEqual(last.hits, [], `round ${i + 1} must still be allowed`)
   }
+  assert.ok(hit(last.hits, 'net:'), `expected a net: hit on round ${CAP}, got ${JSON.stringify(last.hits)}`)
+  assert.ok(hit(last.hits, 'sink:'), 'expected a sink: hit')
 })
 
 test('T1b: the alias fold is what makes net: collide', () => {
@@ -91,21 +111,38 @@ const SAME_COMMAND = 'curl -s https://example.com/data.json -o /workspace/d.json
 
 test('T2: description 1st/2nd/3rd plus a churning timeoutMs cannot launder a repeat', () => {
   const tracker = createTracker(cfg)
-  const calls = [
-    bash(SAME_COMMAND, { description: '1st', timeoutMs: 60000 }),
-    bash(SAME_COMMAND, { description: '2nd', timeoutMs: 1000 }),
-    bash(SAME_COMMAND, { description: '3rd', timeoutMs: 999999 }),
-  ]
-  const r0 = run(tracker, calls[0])
-  assert.deepEqual(r0.hits, [])
-  for (const fps of r0.fps) {
-    assert.ok(!/1st|2nd|3rd/.test(fps), `fingerprint leaked a decoy: ${fps}`)
-    assert.ok(!/60000|999999/.test(fps), `fingerprint leaked timeoutMs: ${fps}`)
+  const decoys = ['1st', '2nd', '3rd', '4th', '5th']
+  const call = (i) => bash(SAME_COMMAND, { description: decoys[i], timeoutMs: 1000 * (i + 1) + 59999 })
+  let last
+  for (let i = 0; i < CAP; i += 1) {
+    last = run(tracker, call(i))
+    if (i === 0) {
+      for (const fps of last.fps) {
+        assert.ok(!/1st|2nd|3rd|4th|5th/.test(fps), `fingerprint leaked a decoy: ${fps}`)
+        assert.ok(!/60000|999999/.test(fps), `fingerprint leaked timeoutMs: ${fps}`)
+      }
+    }
+    if (i < CAP - 1) assert.deepEqual(last.hits, [], `decorated call ${i + 1} must be allowed`)
   }
-  const r1 = run(tracker, calls[1])
-  assert.ok(r1.hits.length > 0, 'the 2nd call must be denied')
-  const r2 = run(tracker, calls[2])
-  assert.ok(r2.hits.length > 0, 'the 3rd call must be denied')
+  assert.ok(last.hits.length > 0, `the cap-th (${CAP}) decorated call must be denied`)
+})
+
+test('T2b: a failed attempt leaves room to retry the SAME call (why the cap is 3)', () => {
+  // The reference deployment: an `edit` failed at the tool layer — the harness
+  // requires a read first, a precondition and not a loop — and the correct
+  // response was to satisfy it and retry the identical call. At a cap of 2 that
+  // retry is the very call that gets blocked, and the only way forward is to
+  // cosmetically change the arguments, which is the behaviour this plugin exists
+  // to stop. At 3 the retry fits, and a call that keeps failing still stops.
+  const tracker = createTracker(cfg)
+  const edit = {
+    name: 'edit',
+    arguments: { file_path: '/w/a.ts', old_string: 'x', new_string: 'y' },
+    agent: A,
+  }
+  assert.deepEqual(run(tracker, edit).hits, [], 'attempt 1 is allowed (and fails)')
+  assert.deepEqual(run(tracker, edit).hits, [], 'the retry of the identical call must be allowed')
+  assert.ok(run(tracker, edit).hits.length > 0, 'a call that keeps failing is still blocked')
 })
 
 test('T3: exact fingerprints are byte-identical when only description/timeoutMs differ', () => {
@@ -161,9 +198,10 @@ test('T4c: iterating on one file is never blocked — a file action is identifie
     arguments: { file_path: '/w/skill.md', old_string: 'a3', new_string: 'b3' },
     agent: A,
   }
-  const deny = run(tracker, again)
+  const deny = runUntilDenied(tracker, again)
   assert.ok(deny.hits.length > 0, 'a byte-identical re-edit is still caught')
   assert.ok(hit(deny.hits, 'exact:'), 'the position-aware fingerprint is exact:')
+  assert.ok(deny.attempts <= CAP, `it must take no more than ${CAP} repeats to be caught`)
 })
 
 // ---------------------------------------------------------------------------
@@ -172,12 +210,19 @@ test('T4c: iterating on one file is never blocked — a file action is identifie
 
 test('T5: curl and wget fetching the same URL into the same file collide', () => {
   const tracker = createTracker(cfg)
-  const r1 = run(tracker, bash('curl -s https://x.example.com/f --max-time 20 -o out.bin'))
-  assert.deepEqual(r1.hits, [])
-  const r2 = run(tracker, bash('wget -O out.bin https://x.example.com/f'))
-  assert.ok(hit(r2.hits, 'net:'), `expected net: hit, got ${JSON.stringify(r2.hits)}`)
-  assert.ok(hit(r2.hits, 'sink:'), 'expected sink: hit')
-  assert.ok(r2.fps.includes('family:http-fetch'), 'wget must join the http-fetch family')
+  const spellings = [
+    'curl -s https://x.example.com/f --max-time 20 -o out.bin',
+    'wget -O out.bin https://x.example.com/f',
+    'curl -s -o out.bin https://x.example.com/f',
+  ]
+  let last
+  for (let i = 0; i < CAP; i += 1) {
+    last = run(tracker, bash(spellings[i % spellings.length]))
+    if (i < CAP - 1) assert.deepEqual(last.hits, [], `fetch ${i + 1} must be allowed`)
+  }
+  assert.ok(hit(last.hits, 'net:'), `expected net: hit, got ${JSON.stringify(last.hits)}`)
+  assert.ok(hit(last.hits, 'sink:'), 'expected sink: hit')
+  assert.ok(last.fps.includes('family:http-fetch'), 'wget must join the http-fetch family')
 })
 
 test('T8: volatile flags do not change the cmd: fingerprint', () => {
@@ -219,7 +264,9 @@ test('T7: agents have independent budgets', () => {
   const tracker = createTracker(cfg)
   const a = bash(SAME_COMMAND, {}, A)
   const b = bash(SAME_COMMAND, {}, B)
-  assert.deepEqual(run(tracker, a).hits, [])
+  for (let i = 0; i < CAP - 1; i += 1) {
+    assert.deepEqual(run(tracker, a).hits, [], `A call ${i + 1} must be allowed`)
+  }
   assert.ok(run(tracker, a).hits.length > 0, 'A is saturated')
   assert.deepEqual(run(tracker, b).hits, [], 'B is untouched by A')
 })
@@ -273,7 +320,7 @@ test('T9e: tokenize honours quotes and escapes', () => {
 test('T9f: firstPathArg and limitFor', () => {
   assert.equal(firstPathArg({ file_path: '/a', path: '/b' }, ['path', 'file_path']), '/b')
   assert.equal(firstPathArg({}, cfg.pathAliases), null)
-  assert.equal(limitFor('net:a/b', cfg.limits), 2)
+  assert.equal(limitFor('net:a/b', cfg.limits), CAP)
   assert.equal(limitFor('site:canada.ca', cfg.limits), 3)
   assert.equal(limitFor('family:http-fetch', cfg.limits), 6)
   assert.equal(limitFor('verb:ls', cfg.limits), Number.POSITIVE_INFINITY)
@@ -288,27 +335,34 @@ test('T10: the same file at the same position twice is denied, a new position is
   const read = (extra = {}) => ({ name: 'read', arguments: { file_path: '/w/README.md', ...extra }, agent: A })
   assert.deepEqual(run(tracker, read()).hits, [])
   // Different position -> different arguments -> different action.
-  assert.deepEqual(run(tracker, read({ offset: 120 })).hits, [])
-  // Same position again -> same arguments -> denied.
-  const repeat = run(tracker, read({ offset: 120 }))
+  assert.deepEqual(run(tracker, read({ offset: 120 })).hits, [], 'a new position is a new action')
+  // The SAME position keeps spending the same budget, and is denied at the cap.
+  const repeat = runUntilDenied(tracker, read({ offset: 120 }))
   assert.ok(hit(repeat.hits, 'exact:'), `expected an exact: hit, got ${JSON.stringify(repeat.hits)}`)
 })
 
 test('T11: a denied call still consumes its budget (hammering stays blocked)', () => {
   const tracker = createTracker(cfg)
   const call = bash('curl -s https://blocked.example.com/x -o f')
-  assert.deepEqual(run(tracker, call).hits, [])
-  assert.ok(run(tracker, call).hits.length > 0, '2nd denied')
+  let last
+  for (let i = 0; i < CAP; i += 1) {
+    last = run(tracker, call)
+    if (i < CAP - 1) assert.deepEqual(last.hits, [], `attempt ${i + 1} must be allowed`)
+  }
+  assert.ok(last.hits.length > 0, `attempt ${CAP} is denied`)
   // "Parallel" duplicates in the same step all see the deny path's commit.
-  assert.ok(run(tracker, call).hits.length > 0)
+  assert.ok(run(tracker, call).hits.length > 0, 'hammering a denied call stays denied')
   assert.ok(run(tracker, call).hits.length > 0)
 })
 
 test('T11b: a denied call does NOT spend budget for resources it never touched', () => {
   const tracker = createTracker(cfg)
-  // Two calls into the same output file: the 2nd is denied on sink:, and its own
-  // (never-fetched) URL must not be charged to net:.
-  run(tracker, bash('curl -s https://a.example.com/1 -o /tmp/shared.bin'))
+  // Fill the shared output file's budget with DISTINCT urls, so the next call is
+  // denied purely on sink: — and its own (never-fetched) URL must not be charged
+  // to net:.
+  for (let i = 0; i < CAP - 1; i += 1) {
+    assert.deepEqual(run(tracker, bash(`curl -s https://a.example.com/${i} -o /tmp/shared.bin`)).hits, [])
+  }
   const denied = run(tracker, bash('curl -s https://b.example.com/2 -o /tmp/shared.bin'))
   assert.ok(hit(denied.hits, 'sink:'), 'denied on the shared sink')
   assert.deepEqual(
@@ -358,10 +412,12 @@ test('T12: apply() wires a synchronous guard that denies a repeat with a usable 
   assert.equal(guards.length, 1)
 
   const call = bash(SAME_COMMAND, { description: '1st' })
-  const first = guards[0](call)
-  assert.equal(first, undefined, 'the value returned from a guard must be undefined to allow')
+  assert.equal(guards[0](call), undefined, 'the value returned from a guard must be undefined to allow')
 
-  const denied = guards[0](bash(SAME_COMMAND, { description: '2nd' }))
+  let denied
+  for (let i = 0; i < CAP; i += 1) {
+    denied = guards[0](bash(SAME_COMMAND, { description: `decorated ${i}` }))
+  }
   assert.equal(typeof denied, 'string')
   assert.match(denied, /^REPEAT_TOOL_BLOCKED:/)
   assert.ok(!denied.includes('<tool_call>') && !denied.includes('<function='), 'denial must not look like markup')
@@ -389,7 +445,7 @@ test('T12b: a human turn clears the window, a plugin notice does not', async () 
   const { ctx, guards, handlers } = fakeCtx()
   const dispose = apply(ctx, {})
   const call = bash(SAME_COMMAND)
-  guards[0](call)
+  for (let i = 0; i < CAP - 1; i += 1) assert.equal(guards[0](call), undefined)
   assert.equal(typeof guards[0](call), 'string')
 
   const preStep = handlers.get('agent/pre-step')
@@ -446,10 +502,10 @@ test('T13c: hasUserMessage only trusts the human source', () => {
 test('T14: shipped defaults are the v2 table', () => {
   assert.equal(DEFAULTS.window, 12)
   assert.deepEqual(DEFAULTS.limits, {
-    exact: 2,
-    cmd: 2,
-    net: 2,
-    sink: 2,
+    exact: 3,
+    cmd: 3,
+    net: 3,
+    sink: 3,
     site: 3,
     'family:http-fetch': 6,
     'verb:curl': 6,

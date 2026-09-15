@@ -135,15 +135,26 @@ const call = (args, agent) =>
 const text = (result) => result.content.map((block) => block.text ?? '').join('\n')
 
 const agent = { id: 'integration-agent' }
-const first = await call(
-  { command: 'curl -s --max-time 20 -o /tmp/probe.html https://example.com/', description: '1st', timeoutMs: 60000 },
-  agent,
-)
-const second = await call(
-  { command: 'curl -s --max-time 20 -o /tmp/probe.html https://example.com/', description: '2nd', timeoutMs: 30000 },
-  agent,
-)
-const third = await call({ command: 'ls -la /tmp', description: '3rd' }, agent)
+// The cap is read from the plugin's own defaults, so this harness tracks a
+// retuned cap instead of hard-coding one: attempts 1..CAP-1 of an identical call
+// are allowed, the CAP-th is denied.
+const { DEFAULTS } = await import(`${PROJECT}lib/defaults.js`)
+const CAP = DEFAULTS.limits.exact
+
+const sameResults = []
+for (let i = 0; i < CAP; i += 1) {
+  sameResults.push(
+    await call(
+      {
+        command: 'curl -s --max-time 20 -o /tmp/probe.html https://example.com/',
+        description: `attempt ${i + 1}`,
+        timeoutMs: 1000 * (i + 1),
+      },
+      agent,
+    ),
+  )
+}
+const unrelated = await call({ command: 'ls -la /tmp', description: 'unrelated' }, agent)
 
 // The user's real loop: four curl calls alternating the host spelling and the
 // timeout, all into one output file, on a FRESH agent.
@@ -162,9 +173,10 @@ for (const [description, command] of [
 console.log(
   JSON.stringify(
     {
-      first: { isError: first.isError, text: text(first).slice(0, 120) },
-      second: { isError: second.isError, text: text(second) },
-      third: { isError: third.isError, text: text(third).slice(0, 120) },
+      cap: CAP,
+      identical: sameResults.map((r, i) => ({ attempt: i + 1, isError: r.isError, head: text(r).split('\n')[0].slice(0, 90) })),
+      deniedText: text(sameResults[CAP - 1]),
+      unrelated: { isError: unrelated.isError, text: text(unrelated).slice(0, 120) },
       pingPong,
       bodiesInvoked: bodies,
     },
@@ -174,13 +186,15 @@ console.log(
 )
 
 const ok =
-  first.isError === false &&
-  second.isError === true &&
-  text(second).startsWith('Error: REPEAT_TOOL_BLOCKED') &&
-  third.isError === false &&
-  bodies.length === 3 &&
-  pingPong[0].isError === false &&
-  pingPong.slice(1).every((entry) => entry.isError === true)
+  sameResults.slice(0, CAP - 1).every((r) => r.isError === false) &&
+  sameResults[CAP - 1].isError === true &&
+  text(sameResults[CAP - 1]).startsWith('Error: REPEAT_TOOL_BLOCKED') &&
+  unrelated.isError === false &&
+  // Bodies that actually ran: (CAP-1) identical calls + the unrelated one +
+  // (CAP-1) ping-pong rounds. Every denied call must have skipped its body.
+  bodies.length === (CAP - 1) * 2 + 1 &&
+  pingPong.slice(0, CAP - 1).every((entry) => entry.isError === false) &&
+  pingPong.slice(CAP - 1).every((entry) => entry.isError === true)
 
 console.log(ok ? '\nPIPELINE-E2E: PASS' : '\nPIPELINE-E2E: FAIL')
 process.exit(ok ? 0 : 1)
