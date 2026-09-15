@@ -672,3 +672,31 @@ test('T22: a refused ask stops asking and behaves like deny for the rest of the 
   for (const path of ['i', 'j']) guards[0](local(path))
   assert.equal((await pre(local('l'), noop)).kind, 'ask', 'asking resumes after a human message')
 })
+
+test('T23: a human turn re-arms the local policy and the window', async () => {
+  // The exemption is scoped to the turn BY DESIGN: approving once must not
+  // disable the breaker for local traffic forever. `reset` (a user message)
+  // drops the whole slot, so both the budget and the ask come back.
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, { localHosts: 'ask' })
+  const pre = handlers.get('tools/pre-execute')
+  const noop = async () => ({ kind: 'allow' })
+  const local = (path) => bash(`curl -s -o /dev/null http://127.0.0.1:18999/${path}`)
+
+  for (const path of ['a', 'b']) guards[0](local(path))
+  const asked = local('c')
+  assert.equal((await pre(asked, noop)).kind, 'ask')
+  assert.equal(guards[0](asked), undefined, 'approved -> exempt for this turn')
+  assert.equal(guards[0](local('d')), undefined, 'and every later local call rides along')
+
+  const preStep = handlers.get('agent/pre-step')
+  await preStep({ agent: A, messages: [{ source: { kind: 'user' } }] }, () => undefined)
+
+  assert.equal(guards[0](local('e')), undefined, 'the new turn starts from an empty budget')
+  assert.equal(guards[0](local('f')), undefined, 'and a clean exemption')
+  assert.equal(
+    (await pre(local('g'), noop)).kind,
+    'ask',
+    'the cap-th local call of the new turn asks again instead of sailing through',
+  )
+})
