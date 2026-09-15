@@ -154,19 +154,29 @@ budget cannot tell them apart from a web crawl. `localHosts` decides:
 
 | Value | Behaviour |
 |---|---|
-| `deny` (default) | local calls are counted and blocked like any other host, and the denial names this knob |
-| `ask` | the first local call that would be blocked asks the operator instead — once per turn |
+| `ask` (default) | the first local call that would be blocked asks the operator instead — once per turn |
+| `deny` | never ask: local calls are counted and blocked like any other host, and the denial names this knob |
 | `allow` | local traffic is never fingerprinted |
 
-`ask` needs an approval service **and somebody to answer it**, so it belongs in a
-profile with a UI: a headless profile should keep `deny`, where an open question
-would simply stall the turn. That makes this a per-profile decision:
+`ask` is the default because it is **fail-closed**. Every unattended outcome of an
+approval is a denial — `rejected` (the session policy is `never`), `cancelled`
+(the turn was aborted), and `unavailable`, which is what the registry falls back to
+when no answerer is registered — so a headless profile degrades to `deny` on its
+own. Nothing has to be configured per profile:
+
+- a profile with a UI gets the prompt;
+- a profile without one keeps blocking local calls, and the only difference from
+  `deny` is that the model's *first* blocked local call of a turn is told
+  "requires approval" instead of `REPEAT_TOOL_BLOCKED` (from the second one on the
+  breaker's own message applies again).
+
+Set `deny` where even that is unwanted, or `allow` to stop counting local traffic
+entirely:
 
 ```yaml
-# web profile — be asked once per turn instead of being blocked
 - id: repeat-tool-breaker
   config:
-    localHosts: ask
+    localHosts: deny
 ```
 
 What an approval buys: the local **target** fingerprints (`net`, `site`, `sink`,
@@ -218,7 +228,7 @@ at which point `ctx.tools.guard` is the genuine method.
       name: dsh-repeat-tool-breaker
       config:
         window: 12                  # recent calls per agent that participate
-        localHosts: deny            # deny | ask | allow — see "Local addresses"
+        localHosts: ask             # ask | deny | allow — see "Local addresses"
         previewChars: 400           # truncation for quoted fingerprints
         resultPreviewChars: 800     # truncation for the quoted previous result
         exclude: [todo_write]       # never counted, never resets (*-wildcards ok)

@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# Compatibility check: boot a REAL dsh of a given version with this plugin
-# installed as a profile bundle, drive it with a scripted mock model, and assert
-# that the guard fired in the real pipeline.
+# Compatibility + behaviour check: boot a REAL dsh of a given version with this
+# plugin installed as a profile bundle, drive it with a scripted mock model, and
+# assert the resulting trajectory.
 #
 # No GPU and no real model are needed: test/compat/mock-llm.py speaks enough of
-# the OpenAI streaming protocol to make the agent issue the SAME bash call
-# MOCK_REPEATS times in a row.
+# the OpenAI streaming protocol to script the agent's tool calls.
+#
+# Two scenarios:
+#   1. the same `bash` call repeated REPEATS times — the action-identity cap must
+#      deny everything after the first CAP-1 attempts;
+#   2. a LOCAL-ADDRESS loop (a different path each turn, so only `site:127.0.0.1`
+#      accumulates). There is no answerer in this profile, so the default
+#      `localHosts: ask` must degrade to a DENIAL — and must not hang.
 #
 # Usage:
-#   # 1. install the dsh version under test somewhere isolated
-#   DSH_PREFIX=/home/gwang/.rtb-compat
+#   DSH_PREFIX=/tmp/dsh-compat
 #   mkdir -p "$DSH_PREFIX" && cd "$DSH_PREFIX" && npm init -y
 #   npm install --no-audit --no-fund @deepseek-ai/dsh@<version>
-#
-#   # 2. run the check
 #   DSH_PREFIX=$DSH_PREFIX ./test/compat/run-compat.sh
 #
 # Environment:
@@ -21,11 +24,10 @@
 #   DSH_BIN      dsh executable (default: $DSH_PREFIX/node_modules/.bin/dsh)
 #   COMPAT_HOME  throwaway DSH_HOME (default: $DSH_PREFIX/home)
 #   MOCK_PORT    port for the mock model (default: 18999)
-#   MOCK_REPEATS how many identical calls the scripted model issues (default: 4)
+#   MOCK_REPEATS identical calls in scenario 1 (default: 4)
 #   PLUGIN_SPEC  what to install into the profile (default: this checkout's path)
 #
-# Exits non-zero if the bundle does not mount or the trajectory is not
-# "attempts 1..cap-1 executed, attempts cap.. denied".
+# Exits non-zero on the first failed assertion.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -39,18 +41,79 @@ PLUGIN_SPEC=${PLUGIN_SPEC:-$PLUGIN_DIR}
 ENDPOINT="http://127.0.0.1:${MOCK_PORT}/v1"
 
 LOG=$(mktemp -d)/compat.log
+MOCK_PID=''
 
-cleanup() { [[ -n "${MOCK_PID:-}" ]] && kill "$MOCK_PID" 2>/dev/null || true; }
+cleanup() { [[ -n "$MOCK_PID" ]] && kill "$MOCK_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
-MOCK_REPEATS="$MOCK_REPEATS" python3 "$HERE/mock-llm.py" "$MOCK_PORT" > "$LOG" 2>&1 &
-MOCK_PID=$!
-sleep 2
-if ! curl -sf -o /dev/null "${ENDPOINT}/models"; then
-  echo "FAIL: the mock model did not start on ${ENDPOINT} (see $LOG)" >&2
-  cat "$LOG" >&2
-  exit 1
-fi
+start_mock() {
+  [[ -n "$MOCK_PID" ]] && kill "$MOCK_PID" 2>/dev/null || true
+  # shellcheck disable=SC2086
+  env "$@" python3 "$HERE/mock-llm.py" "$MOCK_PORT" > "$LOG" 2>&1 &
+  MOCK_PID=$!
+  sleep 2
+  if ! curl -sf -o /dev/null "${ENDPOINT}/models"; then
+    echo "FAIL: the mock model did not start on ${ENDPOINT} (see $LOG)" >&2
+    cat "$LOG" >&2
+    exit 1
+  fi
+}
+
+# $1 label, $2 expected executed count, $3 expected total; rest: mock env pairs
+run_scenario() {
+  local label=$1 expected_executed=$2 expected_total=$3
+  shift 3
+  start_mock "$@"
+  echo "=== $label ==="
+  rm -rf "$COMPAT_HOME/sessions"
+  DSH_HOME="$COMPAT_HOME" MOCK_API_KEY=mock timeout 600 "$DSH_BIN" --profile probe "compat check" 2>&1 | tail -3
+  COMPAT_HOME="$COMPAT_HOME" EXPECT_EXECUTED="$expected_executed" EXPECT_TOTAL="$expected_total" \
+    LABEL="$label" python3 - <<'PY'
+import glob, json, os, subprocess, sys
+
+home = os.environ['COMPAT_HOME']
+expected_executed = int(os.environ['EXPECT_EXECUTED'])
+expected_total = int(os.environ['EXPECT_TOTAL'])
+
+files = glob.glob(f'{home}/sessions/**/session*.jsonl.zstd', recursive=True)
+if not files:
+    sys.exit('FAIL: no session was written')
+
+results = []
+for path in files:
+    raw = subprocess.run(['zstd', '-dc', path], capture_output=True, text=True).stdout
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+        if event.get('type') != 'tool/result':
+            continue
+        for block in event['data']['message'].get('content', []):
+            if block.get('type') == 'tool-result':
+                text = '\n'.join(x.get('text', '') for x in block.get('content', []) if isinstance(x, dict))
+                results.append((bool(block.get('isError')), text))
+
+for i, (is_error, text) in enumerate(results, start=1):
+    print(f'  attempt {i}: isError={is_error} | {text.splitlines()[0][:90]}')
+
+if len(results) != expected_total:
+    sys.exit(f'FAIL: expected {expected_total} tool results, saw {len(results)} '
+             '(a missing result means the run hung or died)')
+executed = [r for r in results if not r[0]]
+denied = [r for r in results if r[0]]
+if len(executed) != expected_executed:
+    sys.exit(f'FAIL: expected {expected_executed} executed attempts, saw {len(executed)}')
+if len(denied) != expected_total - expected_executed:
+    sys.exit(f'FAIL: expected {expected_total - expected_executed} denied attempts, saw {len(denied)}')
+breaker = [t for _, t in denied if 'REPEAT_TOOL_BLOCKED' in t]
+if not breaker:
+    sys.exit('FAIL: no denied attempt carried the breaker\'s own message: '
+             + repr([t[:120] for _, t in denied]))
+print(f'  -> {len(executed)} executed, {len(denied)} denied, '
+      f'{len(breaker)} with REPEAT_TOOL_BLOCKED')
+PY
+}
 
 echo "=== dsh under test ==="
 "$DSH_BIN" --version 2>&1 | tail -1
@@ -101,60 +164,28 @@ if ! DSH_HOME="$COMPAT_HOME" "$DSH_BIN" --profile probe --dump-config 2>&1 | gre
   echo "FAIL: the bundle did not mount" >&2
   exit 1
 fi
-echo "ok"
+echo ok
 
-CAP=$(node --input-type=module -e "
+# NB: capture into a variable rather than `read` — the node one-liner writes no
+# trailing newline, and `read` reports EOF (non-zero) for an unterminated line,
+# which `set -e` turns into an exit.
+DEFAULTS=$(node --input-type=module -e "
   const m = await import('$COMPAT_HOME/profiles/probe/node_modules/dsh-repeat-tool-breaker/lib/defaults.js')
-  process.stdout.write(String(m.DEFAULTS.limits.exact))
+  process.stdout.write(String(m.DEFAULTS.limits.exact) + ' ' + m.DEFAULTS.localHosts)
 ")
-echo "=== cap for action identity: $CAP (mock issues $MOCK_REPEATS identical calls) ==="
+CAP=${DEFAULTS% *}
+POLICY=${DEFAULTS#* }
+echo "=== shipped defaults under test: cap=$CAP localHosts=$POLICY ==="
 
-echo "=== real headless run ==="
-rm -rf "$COMPAT_HOME/sessions"
-DSH_HOME="$COMPAT_HOME" MOCK_API_KEY=mock timeout 600 "$DSH_BIN" --profile probe "compat check" 2>&1 | tail -5
+# Scenario 1 — identical repeats: attempts 1..cap-1 run, the rest are denied.
+run_scenario "identical repeats (cap $CAP)" "$((CAP - 1))" "$MOCK_REPEATS" \
+  MOCK_REPEATS="$MOCK_REPEATS"
 
-echo "=== trajectory ==="
-COMPAT_HOME="$COMPAT_HOME" CAP="$CAP" MOCK_REPEATS="$MOCK_REPEATS" python3 - <<'PY'
-import glob, json, os, subprocess, sys
+# Scenario 2 — a local-address loop with NO answerer. Distinct paths keep `net:`
+# and `exact:` apart, so only `site:127.0.0.1` accumulates; the third call trips
+# it and, with nobody to ask, `ask` must deny rather than stall.
+run_scenario "local loop, no answerer (localHosts=$POLICY)" "$((CAP - 1))" "$((CAP + 2))" \
+  MOCK_REPEATS="$((CAP + 2))" MOCK_PATHS=/a,/b,/c,/d,/e,/f
 
-home = os.environ['COMPAT_HOME']
-cap = int(os.environ['CAP'])
-repeats = int(os.environ['MOCK_REPEATS'])
-
-files = glob.glob(f'{home}/sessions/**/session*.jsonl.zstd', recursive=True)
-if not files:
-    sys.exit('FAIL: no session was written')
-
-calls, results = [], []
-for path in files:
-    raw = subprocess.run(['zstd', '-dc', path], capture_output=True, text=True).stdout
-    for line in raw.splitlines():
-        try:
-            event = json.loads(line)
-        except Exception:
-            continue
-        if event.get('type') == 'tool/call':
-            calls.append(event['data'].get('name'))
-        elif event.get('type') == 'tool/result':
-            for block in event['data']['message'].get('content', []):
-                if block.get('type') == 'tool-result':
-                    text = '\n'.join(x.get('text', '') for x in block.get('content', []) if isinstance(x, dict))
-                    results.append((bool(block.get('isError')), text))
-
-for i, (is_error, text) in enumerate(results, start=1):
-    print(f'  attempt {i}: isError={is_error} | {text.splitlines()[0][:100]}')
-
-if len(results) != repeats:
-    sys.exit(f'FAIL: expected {repeats} tool results, saw {len(results)}')
-
-executed = [r for r in results if not r[0]]
-denied = [r for r in results if r[0]]
-if len(executed) != cap - 1:
-    sys.exit(f'FAIL: expected {cap - 1} executed attempts, saw {len(executed)}')
-if len(denied) != repeats - (cap - 1):
-    sys.exit(f'FAIL: expected {repeats - cap + 1} denied attempts, saw {len(denied)}')
-for _, text in denied:
-    if 'REPEAT_TOOL_BLOCKED' not in text:
-        sys.exit(f'FAIL: a denied attempt did not carry the denial text: {text[:200]!r}')
-print(f'\nCOMPAT: PASS ({cap - 1} executed, {len(denied)} denied, cap={cap})')
-PY
+echo
+echo "COMPAT: PASS"

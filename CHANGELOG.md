@@ -5,6 +5,31 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-15
+
+### Changed
+
+- **`localHosts` now defaults to `ask`**, so installing the plugin is enough: no
+  profile needs a hand-written patch to get the prompt. This is safe because
+  `ask` is **fail-closed** — every unattended outcome of an approval is a denial
+  (`rejected` when the session policy is `never`, `cancelled` when the turn is
+  aborted, and `unavailable`, the value the registry falls back to when no
+  answerer is registered) — so a headless profile degrades to `deny` by itself
+  instead of stalling.
+
+  The one visible difference in an unattended profile: the model's *first* blocked
+  local call of a turn receives the registry's "requires approval, but no approval
+  channel is available" instead of `REPEAT_TOOL_BLOCKED`. From the second one on —
+  the refusal is remembered for the turn — the breaker's own message applies
+  again. Set `localHosts: deny` to avoid even that.
+
+### Fixed
+
+- The refusal note no longer claims the operator declined: with no approval
+  channel the request was never shown to anyone, so it now says the exemption was
+  not granted "either because the request was declined, or because no approval
+  channel was available to answer it".
+
 ## [0.3.0] - 2026-09-15
 
 ### Added
@@ -278,7 +303,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.2...v0.2.3

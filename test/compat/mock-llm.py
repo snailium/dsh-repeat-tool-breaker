@@ -18,6 +18,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 MODEL = os.environ.get('MOCK_MODEL', 'mock-model')
 COMMAND = os.environ.get('MOCK_COMMAND', 'echo compat-check')
 REPEATS = int(os.environ.get('MOCK_REPEATS', '4'))
+# With MOCK_PATHS set, each turn fetches a DIFFERENT path on a local address —
+# the shape of a development loop. Distinct paths keep `net:` and `exact:` apart,
+# so only `site:127.0.0.1` accumulates and the local policy is what decides.
+PATHS = [p for p in os.environ.get('MOCK_PATHS', '').split(',') if p]
+
+
+def command_for(turn: int) -> str:
+    if not PATHS:
+        return COMMAND
+    return "curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:9" + PATHS[turn % len(PATHS)]
 
 
 def frames(tool_results: int):
@@ -36,7 +46,7 @@ def frames(tool_results: int):
                 'type': 'function',
                 'function': {
                     'name': 'bash',
-                    'arguments': json.dumps({'command': COMMAND, 'description': 'compat check'}),
+                    'arguments': json.dumps({'command': command_for(tool_results), 'description': 'compat check'}),
                 },
             }],
         })

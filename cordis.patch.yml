@@ -30,7 +30,7 @@
 #
 # The row below deliberately carries NO `config:`, so the plugin's own
 # fail-loud DEFAULTS apply — and those DEFAULTS are exactly the table documented
-# in the README (window 12; localHosts deny; limits exact/cmd/net/sink 3, site 3,
+# in the README (window 12; localHosts ask; limits exact/cmd/net/sink 3, site 3,
 # family:http-fetch 6, verb:curl 6, verb:wget 6; decoy argument names ignored on
 # every tool). Restating the table here would only create a second copy that can
 # silently go stale — and because ARRAYS in a patch REPLACE the default array,
@@ -45,7 +45,7 @@
 #   - id: repeat-tool-breaker
 #     config:
 #       window: 12                  # recent calls per agent that are counted
-#       localHosts: deny            # deny | ask | allow (ask needs someone to answer)
+#       localHosts: ask             # ask | deny | allow (ask degrades to deny with no answerer)
 #       previewChars: 400           # truncation for quoted fingerprints
 #       resultPreviewChars: 800     # truncation for the quoted previous result
 #       exclude:

@@ -516,7 +516,9 @@ test('T14: shipped defaults are the v2 table', () => {
     'verb:curl': 6,
     'verb:wget': 6,
   })
-  assert.equal(DEFAULTS.localHosts, 'deny', 'the default must be safe for an unattended profile')
+  // `ask` is the default because it is fail-closed: every unattended approval
+  // outcome is a denial, so this degrades to `deny` where nobody can answer.
+  assert.equal(DEFAULTS.localHosts, 'ask', 'the default must work without a hand-written patch')
   assert.deepEqual(DEFAULTS.exclude, ['todo_write'])
   // Removed in 0.2.4: the key only ever fed the path-only file fingerprints, which
   // 0.2.2 deleted. A config that still lists it is accepted and inert.
@@ -566,13 +568,13 @@ test('T17b: a call is local only when EVERY url it mentions is local', () => {
   assert.equal(fingerprints(bash('ls -la'), cfg).local, false, 'a call with no url is not a local call')
 })
 
-test('T18: the default policy denies local calls and names the knob', () => {
-  const tracker = createTracker(cfg)
-  assert.equal(cfg.localHosts, 'deny')
+test('T18: localHosts=deny blocks local calls and names the knob', () => {
+  const deny = validateCfg(mergeDefaults({ localHosts: 'deny' }))
+  const tracker = createTracker(deny)
   const call = () => bash(`curl -s -o /dev/null http://127.0.0.1:18999/${Math.random()}`)
   let last
   for (let i = 0; i < CAP; i += 1) last = run(tracker, call())
-  const { fps, local } = fingerprints(bash('curl -s -o /dev/null http://127.0.0.1:18999/x'), cfg)
+  const { fps, local } = fingerprints(bash('curl -s -o /dev/null http://127.0.0.1:18999/x'), deny)
   assert.equal(local, true)
   const hits = tracker.wouldExceed(A, ['site:127.0.0.1'])
   assert.ok(hits.length > 0, 'the local site is at its cap')
