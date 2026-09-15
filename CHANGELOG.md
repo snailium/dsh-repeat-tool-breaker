@@ -5,6 +5,43 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-15
+
+### Fixed
+
+- **Pagination is no longer mistaken for repetition.** `net:` discarded the query
+  string, so `...commits?per_page=100` and `...commits?per_page=100&page=2` were
+  the same resource. The query is now part of the fingerprint — sorted, with
+  tracking parameters (`utm_*`, `fbclid`, `gclid`, …) removed, so a page number
+  distinguishes one page of results from the next while a cosmetic parameter still
+  cannot launder a repeat.
+- **`site:` no longer merges unrelated services.** `siteOf()` collapses a host to
+  its last two labels, so `api.github.com` and `github.com` shared one budget; a
+  session paginating a GitHub commit list tripped `site:github.com 6/3`.
+
+### Changed
+
+- **The volume budgets are off by default**: `site`, `family:http-fetch`,
+  `verb:curl`, `verb:wget` are now `null`. A budget on how much one site or one
+  verb may be used cannot tell a crawl from a session making progress, and every
+  value tried produced a false positive on a real session — four different URLs
+  blocked by `family:http-fetch: 4`, a development loop blocked by
+  `site:127.0.0.1`, and the commit crawl above. The worst part was the shape of
+  the failure: the agent's own comment in that session read
+  `# Fetch page 2 of openvino commits using a script file to avoid repeat
+  detection` — an agent working *around* the breaker instead of changing
+  approach is the opposite of the intent.
+
+  Repetition is what this plugin detects, and `exact`, `cmd`, `net` and `sink`
+  still do it. Anyone who wants a crawl budget can set one back:
+  `limits: { site: 30, 'family:http-fetch': 60 }`.
+
+### Notes
+
+- The local-address policy is unaffected in principle but changes shape in
+  practice: with `site:` gone, a local loop only accumulates when it hits the
+  SAME host+path, which is exactly what `localHosts` relaxes.
+
 ## [0.3.1] - 2026-09-15
 
 ### Changed
@@ -303,7 +340,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.3...v0.2.4

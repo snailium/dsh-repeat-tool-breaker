@@ -31,7 +31,7 @@ In one paragraph, the v1 → v2 story:
 |---|---|---|
 | **A** | the same `read`/`write`/`bash` arguments again, verbatim | `exact:` (3) |
 | **B** | `description: '1st'/'2nd'/'3rd'`, `command` unchanged | decoy arguments are stripped **before** fingerprinting, so the calls become byte-identical → `exact:` (3) |
-| **C** | `curl --max-time 60 open-data.canada.ca` ↔ `curl --max-time 30 open.canada.ca` | `net:` (3) after host-alias folding and query stripping, plus `sink:` (3) and `cmd:` (3) after volatile-flag stripping |
+| **C** | `curl --max-time 60 open-data.canada.ca` ↔ `curl --max-time 30 open.canada.ca` | `net:` (3) after host-alias folding, plus `sink:` (3) and `cmd:` (3) after volatile-flag stripping |
 
 The sibling official plugin `@deepseek-ai/dsh-repeat-tool-reminder` (advisory, at
 3/5/8 repeats) may stay on — this breaker refuses earlier, so the two compose:
@@ -140,10 +140,10 @@ denies the call, so dodging one (a new host spelling) still collides on another
 |---|---|---|
 | `exact:<tool>:<json>` | tool name + arguments with decoy fields deleted, keys deep-sorted | A, B |
 | `cmd:<verb>:<command>` | verb + command with volatile flags (`--max-time`, `-s`, `--retry`, `timeout N`, `-sSL` clusters…) removed | C, B |
-| `net:<host><path>` | `http(s)` URL with the scheme defaulted, `www.` and default ports dropped, host aliases folded, query/fragment discarded, trailing slash trimmed | C |
-| `site:<last-2-labels>` | registrable-ish site of each URL (IP literals stand alone) | C, drive-by crawling — see [Local addresses](#local-addresses) |
+| `net:<host><path>?<query>` | `http(s)` URL with the scheme defaulted, `www.` and default ports dropped, host aliases folded, the fragment discarded, a trailing slash trimmed, and the **query kept** (sorted, tracking parameters removed) — the query is what makes `?page=2` a different resource | C, and it must NOT fire on pagination |
+| `site:<last-2-labels>` | registrable-ish site of each URL (IP literals stand alone) — note this merges `api.github.com` into `github.com` | not capped by default; see [Local addresses](#local-addresses) |
 | `sink:<path>` | `-o`/`--output`/`-O`/`>`/`>>`/`tee` target of a shell command — except generic destinations (`/dev/null`, `-`, …), which say nothing about *which* resource was fetched | C |
-| `family:http-fetch` | every `curl` / `wget` / `http` / `httpie` / URL-taking tool call | a fetch loop that keeps changing everything else |
+| `family:http-fetch` | every `curl` / `wget` / `http` / `httpie` / URL-taking tool call | nothing by default — a volume budget no setting of which avoided false positives |
 | `verb:<cmd>` | the first non-wrapper command word (`sudo`, `timeout 30`, `FOO=1` are transparent) | tool-swapping within one verb |
 
 ### Local addresses
@@ -243,10 +243,10 @@ at which point `ctx.tools.guard` is the genuine method.
           cmd: 3
           net: 3
           sink: 3
-          site: 3
-          'family:http-fetch': 6
-          'verb:curl': 6
-          'verb:wget': 6
+          site: null                # volume budgets: off by default, see "Tuning"
+          'family:http-fetch': null
+          'verb:curl': null
+          'verb:wget': null
 ```
 
 Merge semantics, which matter when retuning:
@@ -291,36 +291,32 @@ The table mixes *precise* caps with *broad* ones, and the difference matters:
   different action and is never blocked. 0.2.0 shipped path-only counters for
   these and they both had to be removed after blocking ordinary work on the
   reference deployment (see [File operations](#file-operations)).
-- **broad, budget-scoped, per window**: `site: 3`, `family:http-fetch: 6`,
-  `verb:curl: 6`, `verb:wget: 6`. These fire on **volume**, not on
-  repetition, so they are backstops for a runaway crawl — not loop detectors.
+- **volume budgets, off by default**: `site`, `family:http-fetch`, `verb:curl`,
+  `verb:wget`. These counted how MUCH one site or one verb was used. They are all
+  `null` now, because a volume budget cannot tell a crawl from a session that is
+  simply making progress, and every value tried produced a false positive on a
+  real one:
 
-The broad caps were originally 4, and a live run on the reference deployment
-showed exactly why that was wrong: an agent asked for the status codes of **four
-different URLs** was blocked from the second one onwards. Raising the volume caps
-fixed that; a follow-up run of the same task returned all four.
+  | Setting | What it blocked |
+  |---|---|
+  | `family:http-fetch: 4` | a task asking for the status code of **four different URLs** (blocked from the second) |
+  | `site: 3` | ordinary development calls that merely *mentioned* a loopback URL |
+  | `site: 3` | a session paginating a GitHub commit list — `api.github.com` and `github.com` share one budget, so it tripped after three fetches |
 
-If you run research-heavy sessions, raise them further or set them to `null` for
-uncapped, and keep the precise caps at 2:
+  The last one is the clearest argument: the agent's own comment in that session
+  was `# Fetch page 2 of openvino commits using a script file to avoid repeat
+  detection` — a volume cap that pushes an agent to *work around the breaker*
+  instead of changing approach is worse than no cap at all.
 
-```yaml
-- id: repeat-tool-breaker
-  config:
-    limits:
-      site: null
-      'family:http-fetch': null
-      'verb:curl': null
-```
-
-If instead you want the original, more aggressive table back, restate it:
+  Repetition is what this plugin detects, and the resource-scoped caps do that:
+  `exact`, `cmd`, `net`, `sink`. If you do want a crawl budget, set one:
 
 ```yaml
 - id: repeat-tool-breaker
   config:
     limits:
-      'family:http-fetch': 4
-      'verb:curl': 4
-      'verb:wget': 4
+      site: 30                  # at most 30 fetches per site per window
+      'family:http-fetch': 60
 ```
 
 ### Deliberate deviations from the v2 specification
@@ -387,7 +383,8 @@ exclusion, T7 per-agent isolation, T8 volatile flags, T9 normalizer units, T10
 read paths, T11 denied calls still spend budget) and adds the plugin-level wiring
 (T12: the guard denies, quotes the previous result, survives a plugin notice,
 resets on a human turn; T12c: the fail-loud config contract) and the documented
-shape of the shipped defaults (T14/T14b).
+shape of the shipped defaults (T14/T14b: volume is not a loop signal) and
+pagination (T14c: `?page=N` is a new resource, re-fetching one page is a loop).
 
 Three assertions worth singling out, because they are the ones that would have
 caught v1 — or that caught v2's own defaults:

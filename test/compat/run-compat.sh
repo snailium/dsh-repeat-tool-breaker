@@ -107,7 +107,7 @@ if len(executed) != expected_executed:
 if len(denied) != expected_total - expected_executed:
     sys.exit(f'FAIL: expected {expected_total - expected_executed} denied attempts, saw {len(denied)}')
 breaker = [t for _, t in denied if 'REPEAT_TOOL_BLOCKED' in t]
-if not breaker:
+if denied and not breaker:
     sys.exit('FAIL: no denied attempt carried the breaker\'s own message: '
              + repr([t[:120] for _, t in denied]))
 print(f'  -> {len(executed)} executed, {len(denied)} denied, '
@@ -181,11 +181,19 @@ echo "=== shipped defaults under test: cap=$CAP localHosts=$POLICY ==="
 run_scenario "identical repeats (cap $CAP)" "$((CAP - 1))" "$MOCK_REPEATS" \
   MOCK_REPEATS="$MOCK_REPEATS"
 
-# Scenario 2 — a local-address loop with NO answerer. Distinct paths keep `net:`
-# and `exact:` apart, so only `site:127.0.0.1` accumulates; the third call trips
-# it and, with nobody to ask, `ask` must deny rather than stall.
-run_scenario "local loop, no answerer (localHosts=$POLICY)" "$((CAP - 1))" "$((CAP + 2))" \
-  MOCK_REPEATS="$((CAP + 2))" MOCK_PATHS=/a,/b,/c,/d,/e,/f
+# Scenario 2 — a local-address loop with NO answerer. The same path every turn
+# with a different command, so `net:` accumulates while `exact:`/`cmd:` do not;
+# the cap-th call trips it and, with nobody to ask, `ask` must deny rather than
+# stall.
+run_scenario "local loop on one path, no answerer (localHosts=$POLICY)" "$((CAP - 1))" "$((CAP + 2))" \
+  MOCK_REPEATS="$((CAP + 2))" MOCK_LOCAL_PATH=/health
+
+# Scenario 3 — PAGINATION. Different pages of one endpoint are different
+# resources, so nothing may be blocked however many pages are fetched. This is
+# the regression test for the 0.3.2 fix: `net:` used to discard the query, which
+# merged every page into one resource.
+run_scenario "pagination of one endpoint (must never block)" 8 8 \
+  MOCK_REPEATS=8 MOCK_PAGE_BASE=https://api.github.invalid/repos/o/r/commits
 
 echo
 echo "COMPAT: PASS"

@@ -292,10 +292,26 @@ test('T9: omitIgnored removes the decoys and nothing else', () => {
   assert.equal(canonical(cyclic), '{"self":"[cycle]"}')
 })
 
-test('T9b: normUrl folds spelling without inventing identity', () => {
+test('T9b: normUrl folds spelling, keeps the query, drops tracking params', () => {
   const plain = normUrl('https://Example.COM:443/a/b/?q=1#frag', cfg.hostAliases)
-  assert.deepEqual(plain, { host: 'example.com', path: '/a/b', site: 'example.com', href: 'example.com/a/b' })
+  assert.deepEqual(plain, {
+    host: 'example.com',
+    path: '/a/b',
+    site: 'example.com',
+    href: 'example.com/a/b?q=1',
+  })
   assert.equal(normUrl('https://example.com', cfg.hostAliases).path, '/')
+
+  // A page number is the resource; a tracking parameter is not.
+  const page1 = normUrl('https://api.github.com/repos/o/r/commits?per_page=100&page=1', {})
+  const page2 = normUrl('https://api.github.com/repos/o/r/commits?page=2&per_page=100', {})
+  assert.notEqual(page1.href, page2.href, 'pagination must be a different resource')
+  assert.equal(
+    normUrl('https://api.github.com/repos/o/r/commits?per_page=100&page=1&utm_source=x', {}).href,
+    page1.href,
+    'a tracking parameter must not launder a repeat',
+  )
+  assert.equal(page1.href, 'api.github.com/repos/o/r/commits?page=1&per_page=100', 'params are sorted')
   assert.equal(normUrl('192.168.111.90/a', {}).site, '192.168.111.90', 'IP literals must not collapse to "111.90"')
   assert.equal(normUrl('10.1.111.90/a', {}).site, '10.1.111.90')
   assert.equal(normUrl('not a url', {}), null)
@@ -326,9 +342,12 @@ test('T9e: tokenize honours quotes and escapes', () => {
 
 test('T9f: limitFor resolves exact keys, kinds, and a disabled cap', () => {
   assert.equal(limitFor('net:a/b', cfg.limits), CAP)
-  assert.equal(limitFor('site:canada.ca', cfg.limits), 3)
-  assert.equal(limitFor('family:http-fetch', cfg.limits), 6)
+  assert.equal(limitFor('site:canada.ca', cfg.limits), Number.POSITIVE_INFINITY, 'volume caps ship off')
+  assert.equal(limitFor('family:http-fetch', cfg.limits), Number.POSITIVE_INFINITY)
   assert.equal(limitFor('verb:ls', cfg.limits), Number.POSITIVE_INFINITY)
+  // ...but a profile that wants a crawl budget can still set one.
+  assert.equal(limitFor('site:canada.ca', { site: 20 }), 20)
+  assert.equal(limitFor('family:http-fetch', { 'family:http-fetch': 40 }), 40)
 })
 
 // ---------------------------------------------------------------------------
@@ -511,10 +530,10 @@ test('T14: shipped defaults are the v2 table', () => {
     cmd: 3,
     net: 3,
     sink: 3,
-    site: 3,
-    'family:http-fetch': 6,
-    'verb:curl': 6,
-    'verb:wget': 6,
+    site: null,
+    'family:http-fetch': null,
+    'verb:curl': null,
+    'verb:wget': null,
   })
   // `ask` is the default because it is fail-closed: every unattended approval
   // outcome is a denial, so this degrades to `deny` where nobody can answer.
@@ -526,24 +545,43 @@ test('T14: shipped defaults are the v2 table', () => {
   assert.equal(limitFor('writepath:/w', cfg.limits), Number.POSITIVE_INFINITY)
 })
 
-test('T14b: DOCUMENTED BEHAVIOR — the volume cap on http fetching is a backstop, not a 4-call wall', () => {
+test('T14b: DOCUMENTED BEHAVIOR — volume is not a loop signal, so a batch always survives', () => {
   const tracker = createTracker(cfg)
-  // Six DIFFERENT urls in the window: a real research batch must survive.
-  const hosts = ['a.example.com', 'b.example.net', 'c.example.org', 'd.example.io', 'e.example.co']
-  for (const host of hosts) {
-    assert.deepEqual(
-      run(tracker, bash(`curl -s -o /dev/null https://${host}/p`)).hits,
-      [],
-      `${host} must be allowed (this is the case a live run broke on)`,
-    )
+  // Twelve DIFFERENT urls inside one window: real work must never be stopped by
+  // volume. Three earlier releases tried to cap this and every setting produced a
+  // false positive on a real session (see CHANGELOG 0.3.2).
+  for (let i = 0; i < 12; i += 1) {
+    const call = bash(`curl -s -o /dev/null https://host${i}.example.com/p`)
+    assert.deepEqual(run(tracker, call).hits, [], `fetch #${i + 1} must be allowed`)
   }
-  const sixth = run(tracker, bash('curl -s -o /dev/null https://f.example.dev/p'))
-  assert.ok(hit(sixth.hits, 'family:http-fetch'), 'family:http-fetch stops a runaway crawl at 6 per window')
+  // What IS still stopped is the same resource over and over.
+  const repeat = bash('curl -s -o /dev/null https://host0.example.com/p')
+  for (let i = 0; i < CAP - 1; i += 1) run(tracker, repeat)
+  assert.ok(run(tracker, repeat).hits.length > 0, 'repeating one resource is still a loop')
+})
+
+test('T14c: paginating one endpoint is progress, not a repeat', () => {
+  const tracker = createTracker(cfg)
+  const page = (n) => bash(`curl -sL "https://api.github.com/repos/o/r/commits?per_page=100&page=${n}"`)
+  for (let n = 1; n <= 8; n += 1) {
+    assert.deepEqual(run(tracker, page(n)).hits, [], `page ${n} must be allowed`)
+  }
+  // The same page twice in a row is still inside the cap; the cap-th is denied.
+  assert.deepEqual(run(tracker, page(8)).hits, [])
+  assert.ok(run(tracker, page(8)).hits.length > 0, 're-fetching ONE page is a loop')
 })
 
 // ---------------------------------------------------------------------------
 // T17+ — local-address policy (`localHosts`)
+//
+// A local call is one that mentions at least one URL and every URL it mentions is
+// local. With the volume caps off, a LOCAL loop only accumulates when it hits the
+// SAME host+path — so these helpers vary the command, not the target.
 // ---------------------------------------------------------------------------
+
+/** A call to one local path whose COMMAND differs per variant (so `net:` is what accumulates). */
+const localCall = (path, variant = 0) =>
+  bash(`curl -s -w 'code-${variant}' -o /dev/null http://127.0.0.1:18999/${path}`)
 
 test('T17: isLocalHost covers loopback, private ranges, and link-local', () => {
   for (const host of ['localhost', 'api.localhost', '127.0.0.1', '127.9.9.9', '::1',
@@ -568,23 +606,19 @@ test('T17b: a call is local only when EVERY url it mentions is local', () => {
   assert.equal(fingerprints(bash('ls -la'), cfg).local, false, 'a call with no url is not a local call')
 })
 
-test('T18: localHosts=deny blocks local calls and names the knob', () => {
-  const deny = validateCfg(mergeDefaults({ localHosts: 'deny' }))
-  const tracker = createTracker(deny)
-  const call = () => bash(`curl -s -o /dev/null http://127.0.0.1:18999/${Math.random()}`)
-  let last
-  for (let i = 0; i < CAP; i += 1) last = run(tracker, call())
-  const { fps, local } = fingerprints(bash('curl -s -o /dev/null http://127.0.0.1:18999/x'), deny)
-  assert.equal(local, true)
-  const hits = tracker.wouldExceed(A, ['site:127.0.0.1'])
-  assert.ok(hits.length > 0, 'the local site is at its cap')
-  assert.equal(allHitsRelaxable(hits, true), true)
-  assert.ok(fps.length > 0)
-  void last
+test('T18: localHosts=deny blocks the cap-th local call and names the knob', () => {
+  const { ctx, guards } = fakeCtx()
+  apply(ctx, { localHosts: 'deny' })
+  assert.equal(guards[0](localCall('p', 0)), undefined)
+  assert.equal(guards[0](localCall('p', 1)), undefined)
+  const message = guards[0](localCall('p', 2))
+  assert.equal(typeof message, 'string')
+  assert.match(message, /LOCAL address/)
+  assert.match(message, /localHosts: deny/)
 })
 
 test('T19: localHosts=allow never fingerprints a local host', () => {
-  const allow = mergeDefaults({ localHosts: 'allow' })
+  const allow = validateCfg(mergeDefaults({ localHosts: 'allow' }))
   const { fps, local } = fingerprints(bash('curl -s http://127.0.0.1:18999/x -o /tmp/o'), allow)
   assert.equal(local, false, 'an already-exempt call needs no further treatment')
   assert.ok(!fps.some((fp) => fp.startsWith('net:127.')), `no local net: fingerprint: ${fps}`)
@@ -593,25 +627,22 @@ test('T19: localHosts=allow never fingerprints a local host', () => {
   // ...and the guard therefore never blocks the loop.
   const tracker = createTracker(allow)
   for (let i = 0; i < 8; i += 1) {
-    const call = bash(`curl -s -o /dev/null http://127.0.0.1:18999/${i}`)
-    assert.deepEqual(run(tracker, call, allow).hits, [])
+    assert.deepEqual(run(tracker, localCall('p', i), allow).hits, [], `local call ${i + 1} must be allowed`)
   }
 })
 
 test('T20: asking exempts local traffic for the turn, but never the action itself', async () => {
-  const ask = validateCfg(mergeDefaults({ localHosts: 'ask' }))
   const { ctx, guards, handlers } = fakeCtx()
   apply(ctx, { localHosts: 'ask' })
   const pre = handlers.get('tools/pre-execute')
   const noop = async () => ({ kind: 'allow' })
-  const local = (path) => bash(`curl -s -o /dev/null http://127.0.0.1:18999/${path}`)
 
-  // Three local calls fill the site budget without tripping it.
-  // Fill the site budget: CAP-1 calls fit, the cap-th is the one that trips.
-  for (const path of ['a', 'b']) assert.equal(guards[0](local(path)), undefined)
+  assert.equal(guards[0](localCall('p', 0)), undefined)
+  assert.equal(guards[0](localCall('p', 1)), undefined)
 
-  // The fourth would block on `site:127.0.0.1` — so it is asked about instead.
-  const askable = local('c')
+  // The third fetch of the same local resource would block on `net:` — so it is
+  // asked about instead.
+  const askable = localCall('p', 2)
   const decision = await pre(askable, noop)
   assert.equal(decision.kind, 'ask')
   assert.match(decision.reason, /LOCAL address/)
@@ -619,14 +650,13 @@ test('T20: asking exempts local traffic for the turn, but never the action itsel
 
   // Approved: the guard sees the very execution that was asked about.
   assert.equal(guards[0](askable), undefined, 'an approved ask must not be denied by the guard')
+  for (let i = 3; i < 8; i += 1) {
+    assert.equal(guards[0](localCall('p', i)), undefined, `local call ${i + 1} rides along`)
+  }
 
-  // The exemption holds for the rest of the turn...
-  for (const path of ['e', 'f', 'g', 'h']) assert.equal(guards[0](local(path)), undefined)
-
-  // ...but a byte-identical repeat is still a loop.
-  assert.equal(guards[0](local('a')), undefined, 'second occurrence is still inside the cap')
-  assert.equal(typeof guards[0](local('a')), 'string', 'the third identical call is denied')
-  void ask
+  // ...but the action itself is never exempt: `exact` is not relaxable.
+  assert.equal(guards[0](localCall('p', 0)), undefined, 'a second occurrence is inside the cap')
+  assert.equal(typeof guards[0](localCall('p', 0)), 'string', 'the cap-th identical call is denied')
 })
 
 test('T21: a call that is not purely local is never askable', async () => {
@@ -652,27 +682,28 @@ test('T22: a refused ask stops asking and behaves like deny for the rest of the 
   const pre = handlers.get('tools/pre-execute')
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
-  const local = (path) => bash(`curl -s -o /dev/null http://127.0.0.1:18999/${path}`)
 
-  for (const path of ['a', 'b']) guards[0](local(path))
-  const denied = local('c')
+  guards[0](localCall('p', 0))
+  guards[0](localCall('p', 1))
+  const denied = localCall('p', 2)
   assert.equal((await pre(denied, noop)).kind, 'ask')
 
   // Rejected: the guard never sees it, but post-execute does.
   await post(denied, { isError: true, content: [{ type: 'text', text: 'denied by operator' }] }, noop)
 
   // No further prompts this turn...
-  assert.equal((await pre(local('e'), noop)).kind, 'allow')
+  assert.equal((await pre(localCall('p', 3), noop)).kind, 'allow')
   // ...and the denial explains what happened to the model.
-  const message = guards[0](local('e'))
+  const message = guards[0](localCall('p', 3))
   assert.equal(typeof message, 'string')
-  assert.match(message, /declined/)
+  assert.match(message, /was NOT exempted/)
 
   // A new human turn clears the refusal.
   const preStep = handlers.get('agent/pre-step')
   await preStep({ agent: A, messages: [{ source: { kind: 'user' } }] }, () => undefined)
-  for (const path of ['i', 'j']) guards[0](local(path))
-  assert.equal((await pre(local('l'), noop)).kind, 'ask', 'asking resumes after a human message')
+  guards[0](localCall('q', 0))
+  guards[0](localCall('q', 1))
+  assert.equal((await pre(localCall('q', 2), noop)).kind, 'ask', 'asking resumes after a human message')
 })
 
 test('T23: a human turn re-arms the local policy and the window', async () => {
@@ -683,21 +714,21 @@ test('T23: a human turn re-arms the local policy and the window', async () => {
   apply(ctx, { localHosts: 'ask' })
   const pre = handlers.get('tools/pre-execute')
   const noop = async () => ({ kind: 'allow' })
-  const local = (path) => bash(`curl -s -o /dev/null http://127.0.0.1:18999/${path}`)
 
-  for (const path of ['a', 'b']) guards[0](local(path))
-  const asked = local('c')
+  guards[0](localCall('p', 0))
+  guards[0](localCall('p', 1))
+  const asked = localCall('p', 2)
   assert.equal((await pre(asked, noop)).kind, 'ask')
   assert.equal(guards[0](asked), undefined, 'approved -> exempt for this turn')
-  assert.equal(guards[0](local('d')), undefined, 'and every later local call rides along')
+  assert.equal(guards[0](localCall('p', 3)), undefined, 'and every later local call rides along')
 
   const preStep = handlers.get('agent/pre-step')
   await preStep({ agent: A, messages: [{ source: { kind: 'user' } }] }, () => undefined)
 
-  assert.equal(guards[0](local('e')), undefined, 'the new turn starts from an empty budget')
-  assert.equal(guards[0](local('f')), undefined, 'and a clean exemption')
+  assert.equal(guards[0](localCall('q', 0)), undefined, 'the new turn starts from an empty budget')
+  assert.equal(guards[0](localCall('q', 1)), undefined, 'and a clean exemption')
   assert.equal(
-    (await pre(local('g'), noop)).kind,
+    (await pre(localCall('q', 2), noop)).kind,
     'ask',
     'the cap-th local call of the new turn asks again instead of sailing through',
   )

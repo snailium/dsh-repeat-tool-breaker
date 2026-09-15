@@ -18,16 +18,27 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 MODEL = os.environ.get('MOCK_MODEL', 'mock-model')
 COMMAND = os.environ.get('MOCK_COMMAND', 'echo compat-check')
 REPEATS = int(os.environ.get('MOCK_REPEATS', '4'))
-# With MOCK_PATHS set, each turn fetches a DIFFERENT path on a local address —
-# the shape of a development loop. Distinct paths keep `net:` and `exact:` apart,
-# so only `site:127.0.0.1` accumulates and the local policy is what decides.
+# Three scripted shapes, chosen by env:
+#   MOCK_PATHS       a DIFFERENT local path per turn (distinct `net:`, so with the
+#                    volume caps off nothing accumulates — the shape that must be
+#                    allowed);
+#   MOCK_LOCAL_PATH  the SAME local path per turn with a DIFFERENT command, so
+#                    `net:` accumulates while `exact:`/`cmd:` do not — the shape
+#                    that reaches the local policy;
+#   MOCK_PAGE_BASE   the next page of one endpoint — must NEVER be blocked.
 PATHS = [p for p in os.environ.get('MOCK_PATHS', '').split(',') if p]
+LOCAL_PATH = os.environ.get('MOCK_LOCAL_PATH', '')
+PAGE_BASE = os.environ.get('MOCK_PAGE_BASE', '')
 
 
 def command_for(turn: int) -> str:
-    if not PATHS:
-        return COMMAND
-    return "curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:9" + PATHS[turn % len(PATHS)]
+    if LOCAL_PATH:
+        return f"curl -s -w 'code-{turn}' -o /dev/null http://127.0.0.1:9{LOCAL_PATH}"
+    if PAGE_BASE:
+        return f'curl -sL "{PAGE_BASE}?per_page=100&page={turn + 1}"'
+    if PATHS:
+        return "curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:9" + PATHS[turn % len(PATHS)]
+    return COMMAND
 
 
 def frames(tool_results: int):
