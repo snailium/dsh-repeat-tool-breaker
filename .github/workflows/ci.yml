@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    name: logic suite (node ${{ matrix.node }})
+    name: suite (node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -23,7 +23,9 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       # The plugin is dependency-free, so there is nothing to install.
-      - name: Run deterministic guard-logic suite
+      - name: Run deterministic suite
         run: npm test
       - name: Syntax check
-        run: node --check index.js
+        run: |
+          node --check index.js
+          for f in lib/*.js; do node --check "$f"; done

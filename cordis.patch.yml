@@ -28,32 +28,52 @@
 #    form — a flat `- id:` entry is a RECONFIG of an already-present id and
 #    reports "not found" when the plugin is not yet in the composed tree.
 #
-# In both paths the row below carries NO `config`, so the plugin's own
-# fail-loud DEFAULTS apply (denyAfter 2, exclude [todo_write],
-# readTools [read, Read, read_file, …], maxSamePath 3). Reconfigure the row by
-# id from the profile's own patch layer — a patch replaces the targeted row's
-# whole `config` rather than merging into it, so restate every field you want:
+# The row below deliberately carries NO `config:`, so the plugin's own
+# fail-loud DEFAULTS apply — and those DEFAULTS are exactly the v2 table
+# documented in the README (window 12; limits exact/cmd/net/sink/readpath 2,
+# writepath 3, site 3, family:http-fetch 4, verb:curl 4, verb:wget 4; decoy
+# argument names ignored on every tool). Restating the table here would only
+# create a second copy that can silently go stale — and because ARRAYS in a
+# patch REPLACE the default array, a stale `pathAliases:` would drop
+# `file_path` and quietly disable the read/write path guards.
+#
+# To retune, RECONFIGURE the row by id from the PROFILE's own patch layer. Note
+# that a patch replaces the targeted row's WHOLE `config` rather than merging
+# into it, so restate every field you want. Only `ignoreArgs`, `hostAliases`
+# and `limits` merge one level deep with the defaults; scalars replace and
+# arrays (`exclude`, `include`, `pathAliases`) replace outright.
 #
 #   - id: repeat-tool-breaker
 #     config:
-#       denyAfter: 3          # allow one repeat, deny the 3rd identical call
-#       warnAfter: 2          # advisory fires only when 2 <= warnAfter < denyAfter
-#       registerAdvisory: true
+#       window: 12                  # recent calls per agent that are counted
+#       previewChars: 400           # truncation for quoted fingerprints
+#       resultPreviewChars: 800     # truncation for the quoted previous result
 #       exclude:
-#         - todo_write        # never counted, never resets the chain
-#       include: []           # non-empty = ONLY these tools are tracked
-#       readTools:
-#         - read
-#         - Read
-#         - read_file
-#       matchReadBySubstring: true
-#       pathAliases:
+#         - todo_write              # never counted, never resets the window
+#       include: []                 # non-empty = ONLY these names/patterns count
+#       pathAliases:                # REPLACES the default list — keep file_path
 #         - path
+#         - file_path
 #         - filePath
 #         - file
-#       maxSamePath: 3
-#       previewChars: 400
-#       resultPreviewChars: 800
+#         - target_file
+#       ignoreArgs:                 # merged over the defaults
+#         '*':
+#           - description             # the v1 escape hatch: decoy fields are
+#           - timeoutMs               # deleted before ANY fingerprint is built
+#       hostAliases:                # merged over the defaults
+#         open-data.canada.ca: open.canada.ca
+#       limits:                     # merged over the defaults; null = uncapped
+#         exact: 2                  # deny the 2nd identical (cleaned) call
+#         cmd: 2                    # deny the 2nd same command, flags stripped
+#         net: 2                    # deny the 2nd fetch of the same host+path
+#         sink: 2                   # deny the 2nd shell write to the same path
+#         readpath: 2               # deny the 2nd read of the same file
+#         writepath: 3              # cap repeated writes to one file (edits?)
+#         site: 3                   # per-window fetch budget for one site
+#         'family:http-fetch': 4    # per-window budget for ALL http fetching
+#         'verb:curl': 4
+#         'verb:wget': 4
 #
 # Using an absolute path as `name` (e.g. /path/to/index.js) also works and is
 # the way to mount a CHECKOUT before it is installed into the profile.

@@ -5,26 +5,45 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 
-Hard break on an agent's repeated **identical** tool calls. A local, dependency-free
+Hard break on an agent's repeated tool calls. A local, dependency-free
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin
-that registers a single synchronous monotonic gate on the public
-`ctx.tools.guard` API. By default the **2nd** identical call (same tool name +
-canonically-equal arguments, property order ignored) is **denied before it
-executes**; the model then only sees an `isError` result whose text starts with
-`REPEAT_TOOL_BLOCKED`, quotes the previous successful result, and tells it to
-advance or conclude instead of retrying.
+that registers one synchronous gate on the public `ctx.tools.guard` API: when a
+call repeats an action already seen inside the agent's sliding window, the call
+is **denied before it executes** and the model gets an `isError` result starting
+with `REPEAT_TOOL_BLOCKED` that quotes the previous result and says what to do
+instead.
 
-The sibling official plugin `@deepseek-ai/dsh-repeat-tool-reminder` (advisory,
-at 3/5/8 repeats) may stay on — this breaker refuses earlier (at 2), so the two
-compose: the breaker is the hard gate, the reminder is the soft nudge.
+In one paragraph, the v1 → v2 story:
+
+> **v1 lost** because it counted *byte-identical consecutive* calls while the
+> model varied a presentation field (`description: '1st'|'2nd'|'3rd'`, churning
+> `timeoutMs`) and ping-ponged between host spellings
+> (`open-data.canada.ca` ↔ `open.canada.ca`) with a different `--max-time` each
+> time — every call looked new, so the counter never advanced.
+> **v2 wins** by deleting decoy arguments before any fingerprint is built, then
+> counting *semantic* fingerprints (`net:`, `site:`, `sink:`, `cmd:`, `exact:`,
+> `family:`, `verb:`) over a per-agent window of the last 12 calls, so a repeat
+> has to change the actual resource — not its spelling — to pass.
+
+## The three loops, and what catches each
+
+| | Loop | Caught by |
+|---|---|---|
+| **A** | the same `read`/`write`/`bash` arguments again, verbatim | `exact:` (2) |
+| **B** | `description: '1st'/'2nd'/'3rd'`, `command` unchanged | decoy arguments are stripped **before** fingerprinting, so the calls become byte-identical → `exact:` (2) |
+| **C** | `curl --max-time 60 open-data.canada.ca` ↔ `curl --max-time 30 open.canada.ca` | `net:` (2) after host-alias folding and query stripping, plus `sink:` (2) and `cmd:` (2) after volatile-flag stripping |
+
+The sibling official plugin `@deepseek-ai/dsh-repeat-tool-reminder` (advisory, at
+3/5/8 repeats) may stay on — this breaker refuses earlier, so the two compose:
+the breaker is the hard gate, the reminder is the soft nudge.
 
 ## Requirements
 
 - Node.js **>= 20** (developed and tested on 22).
 - A DSH profile that exposes the `tools` service. Built and verified against
   **`@deepseek-ai/dsh` 0.1.2-rc.1**.
-- No runtime dependencies — `index.js` imports nothing (no `cordis`, no
-  schemastery), so it can be mounted straight from a path.
+- No runtime dependencies — the plugin imports only its own `lib/` modules (no
+  `cordis`, no schemastery), so it can be mounted straight from a path.
 
 ## Install
 
@@ -53,7 +72,7 @@ Then add it to the profile's ordered bundle list
 ```
 
 The bundle's patch layer mounts the plugin with **no `config:`**, so the
-fail-loud defaults really are the defaults. To tune it, reconfigure the row by
+fail-loud `DEFAULTS` really are the defaults. To tune it, reconfigure the row by
 id from the *profile's own* `cordis.patch.yml` — remember a patch replaces the
 targeted row's whole `config` instead of merging into it, so restate every field
 you want (see [Configuration](#configuration)).
@@ -98,7 +117,7 @@ Tool dispatch on the DeepSeek Harness runs:
 ```
 tool/call
   → tools/pre-execute      (allow / deny / ask)
-  → tools/guard()          ← THIS plugin's monotonic gate
+  → tools/guard()          ← THIS plugin's gate
   → tools/execute          (the real tool body)
   → tools/post-execute
   → tools/result
@@ -109,21 +128,50 @@ re-allowed by listener ordering, and — critically — **the tool body never ru
 That is what distinguishes a hard break from the official reminder, which only
 injects a softer "you repeated X" message after the call already executed.
 
-## Interface
+The guard is deliberately synchronous: no `await`, no DNS, no disk reads.
 
-- `ctx.tools.guard((execution) => string | undefined)` — synchronous:
-  - return `string` → deny (tool does not run; model sees `Error: <string>`),
-  - return `undefined` → leave allowed.
-- Tracking state (`WeakMap<Agent, chain>`) is per **live Agent instance**, so one
-  agent's loop never trips another's, and it is reclaimed when the agent goes away.
-- A new **user message** (`agent/pre-step` with a `user` source) clears that
-  agent's chain, so a fresh instruction is never treated as a loop.
-- Reserved tools (`exclude`, default `todo_write`) are transparent: they neither
-  count nor reset other tools' chains.
-- Read-like tools (`read`, `read_file`, `file-read`, `fs-read`, `Read`, and any
-  name matching `/read/i` by default) additionally get a **same-path cap**
-  (`maxSamePath`, default 3) so a model re-reading one file with *varying*
-  arguments is still bounded.
+## How a call is fingerprinted
+
+Each call contributes a *set* of fingerprints. Any one of them reaching its cap
+denies the call, so dodging one (a new host spelling) still collides on another
+(a new `sink:` or `cmd:`).
+
+| Fingerprint | Built from | Catches |
+|---|---|---|
+| `exact:<tool>:<json>` | tool name + arguments with decoy fields deleted, keys deep-sorted | A, B |
+| `cmd:<verb>:<command>` | verb + command with volatile flags (`--max-time`, `-s`, `--retry`, `timeout N`, `-sSL` clusters…) removed | C, B |
+| `net:<host><path>` | `http(s)` URL with the scheme defaulted, `www.` and default ports dropped, host aliases folded, query/fragment discarded, trailing slash trimmed | C |
+| `site:<last-2-labels>` | registrable-ish site of each URL (IP literals stand alone) | C, drive-by crawling |
+| `sink:<path>` | `-o`/`--output`/`-O`/`>`/`>>`/`tee` target of a shell command — except generic destinations (`/dev/null`, `-`, …), which say nothing about *which* resource was fetched | C |
+| `readpath:<path>` | a file **read** (`read`, `read_file`, any `/read/i` name) | re-reading one file with varying arguments |
+| `writepath:<path>` | a file **write/edit** | rewriting one file over and over |
+| `family:http-fetch` | every `curl` / `wget` / `http` / `httpie` / URL-taking tool call | a fetch loop that keeps changing everything else |
+| `verb:<cmd>` | the first non-wrapper command word (`sudo`, `timeout 30`, `FOO=1` are transparent) | tool-swapping within one verb |
+
+### Counting rules
+
+- State is a **per-agent sliding window** (`window`, default 12 calls) held in a
+  `WeakMap` keyed by the live `Agent` object — one agent's loop never trips
+  another's, and subagents get their own budget.
+- A call is denied when a fingerprint **already appears `limit - 1` times** in the
+  window, i.e. when the current call would be the `limit`-th occurrence. The first
+  occurrence of anything is therefore always allowed.
+- The guard **commits on both outcomes**, but *what* it commits differs, and that
+  difference is load-bearing:
+  - an **allowed** call commits every fingerprint it carries — the action really
+    happened, so it owns its share of the budget;
+  - a **denied** call commits only the fingerprints that **hit their cap**. The
+    action never ran, so it must not spend budget on a resource it never touched.
+    A measured run showed the cost of getting this wrong: a denied
+    `curl https://example.org` poisoned `net:example.org/`, after which the model
+    could not fetch that URL through *any* tool for the rest of the turn. The
+    hitting fingerprints are already at their cap, so re-attempting the blocked
+    call stays blocked either way.
+- A real **user message** (`agent/pre-step` with source `kind: 'user'`) clears that
+  agent's window. Plugin notices and tool results do **not** — otherwise the
+  breaker's own denial would reset the budget it is enforcing.
+- Excluded tools (`exclude`, default `todo_write`; `*`-wildcards supported) are
+  fully transparent: they neither count nor reset.
 
 ## Configuration
 
@@ -133,53 +181,118 @@ plugin exports an object form (`{ name, inject: ['tools'], apply }`);
 `inject: ['tools']` defers `apply` until the real `ToolRuntime` service is live,
 at which point `ctx.tools.guard` is the genuine method.
 
-A hand-written mount row looks like this (`name` is the package specifier once the
-plugin is installed into the profile, or an absolute path to `index.js` when
-mounting a bare checkout):
-
 ```yaml
 - insert:
     - id: repeat-tool-breaker
       name: dsh-repeat-tool-breaker
       config:
-        denyAfter: 2          # identical (tool + canonical args) call #2 is denied (>=2)
-        warnAfter: 2          # advisory tier; inert unless 2 <= warnAfter < denyAfter
-        registerAdvisory: true
-        exclude: [todo_write] # never count/reset these tools (include/exclude are *-wildcards)
-        include: []           # non-empty = ONLY these tools are tracked
-        readTools: [read, Read, read_file, read-file, file-read, fs-read]
-        matchReadBySubstring: true
-        pathAliases: [path, filePath, file, target_file]
-        maxSamePath: 3
-        previewChars: 400
-        resultPreviewChars: 800
+        window: 12                  # recent calls per agent that participate
+        previewChars: 400           # truncation for quoted fingerprints
+        resultPreviewChars: 800     # truncation for the quoted previous result
+        exclude: [todo_write]       # never counted, never resets (*-wildcards ok)
+        include: []                 # non-empty = ONLY these names/patterns count
+        pathAliases: [path, file_path, filePath, file, target_file]
+        ignoreArgs:                 # merged over the defaults
+          '*': [description, timeoutMs, run_in_background, justification, reason, title, comment]
+          bash: [description, timeoutMs, run_in_background, justification]
+        hostAliases:                # merged over the defaults
+          open-data.canada.ca: open.canada.ca
+        limits:                     # merged over the defaults; null = uncapped
+          exact: 2
+          cmd: 2
+          net: 2
+          sink: 2
+          readpath: 2
+          writepath: 3
+          site: 3
+          'family:http-fetch': 6
+          'verb:curl': 6
+          'verb:wget': 6
 ```
+
+Merge semantics, which matter when retuning:
+
+- `ignoreArgs`, `hostAliases` and `limits` merge **one level deep** over the
+  defaults, so you can add one host alias or retune one cap without restating the
+  table.
+- Scalars replace; arrays (`exclude`, `include`, `pathAliases`) **replace
+  outright** — a `pathAliases:` that omits `file_path` silently disables the
+  read/write path guards, because that is the key dsh's own file tools use.
+- A patch replaces the targeted row's whole `config`, so `config` keys are not
+  inherited from the bundle layer.
+
+Every value is validated fail-loud in `apply`: `window >= 4`, every limit either
+`null` or a finite number `>= 2` (a cap below 2 would deny the *first* call), and
+preview caps `>= 1`. Config keys removed in 0.2.0 (`denyAfter`, `warnAfter`,
+`registerAdvisory`, `maxSamePath`, `readTools`, `matchReadBySubstring`) throw with
+a pointer at their replacement rather than being ignored, so an upgraded profile
+cannot silently lose its tuning.
 
 (The `- insert:` list is required to **add** a new plugin; a flat `- id:` entry is
 a reconfig of an already-present id and fails with "entry not found" for a plugin
 that isn't yet in the composed tree.)
 
-Here `name` is an absolute POSIX path to this directory's `index.js` (dev/overlay
-loop). When the package is installed into a profile it can instead be the package
-specifier `dsh-repeat-tool-breaker`.
+### Tuning, and how these numbers were chosen
 
-### About the advisory tier
+The table mixes *precise* caps with *broad* ones, and the difference matters:
 
-The `warnAfter` notice is deliberately **inert unless `2 <= warnAfter < denyAfter`**:
+- **precise, resource-scoped, cap 2**: `exact`, `cmd`, `net`, `sink`, `readpath`.
+  These fire only when the same action actually happens again. They are what
+  catches loops, and they should stay at 2.
+- **broad, budget-scoped, per window**: `site: 3`, `family:http-fetch: 6`,
+  `verb:curl: 6`, `verb:wget: 6`, `writepath: 3`. These fire on **volume**, not on
+  repetition, so they are backstops for a runaway crawl — not loop detectors.
 
-- `warnAfter` must be at least 2, because a notice only makes sense once a repeat
-  has actually happened;
-- it must be below `denyAfter`, because at `denyAfter` the call is blocked and the
-  deny reason already explains why.
+The broad caps were originally 4, and a live run on the reference deployment
+showed exactly why that was wrong: an agent asked for the status codes of **four
+different URLs** was blocked from the second one onwards. Raising the volume caps
+fixed that; a follow-up run of the same task returned all four.
 
-With the default `denyAfter: 2` the gate blocks on the very first repeat, so there
-is no room for a separate pre-block nudge and nothing is emitted. Set
-`denyAfter: 3, warnAfter: 2` to get one warning after the first repeat and the
-block on the second.
+If you run research-heavy sessions, raise them further or set them to `null` for
+uncapped, and keep the precise caps at 2:
 
-This matters: an advisory keyed only on `count === warnAfter` would fire on every
-*ordinary* tool call (every fresh call starts a new run at count 1), attaching a
-misleading "you repeated this" message to each one.
+```yaml
+- id: repeat-tool-breaker
+  config:
+    limits:
+      site: null
+      'family:http-fetch': null
+      'verb:curl': null
+```
+
+If instead you want the original, more aggressive table back, restate it:
+
+```yaml
+- id: repeat-tool-breaker
+  config:
+    limits:
+      'family:http-fetch': 4
+      'verb:curl': 4
+      'verb:wget': 4
+```
+
+### Deliberate deviations from the v2 specification
+
+All four are consequences of running the plugin against a live model on the
+reference deployment; each is reversible from config alone.
+
+1. **`writepath` instead of `sink` for file tools.** The spec folded reads and
+   writes of one path into a single `sink:` counter, which would deny the second
+   half of the completely ordinary pair `read foo.ts` → `write foo.ts`. Reads and
+   writes are different actions, so they get different counters (`readpath`,
+   capped at 2; `writepath`, capped at 3). `sink:` now means what §3.6 defined it
+   as: where a *shell command* writes its bytes.
+2. **`file_path` added to `pathAliases`.** The spec's list (`path`, `filePath`,
+   `file`, `target_file`) does not include the key dsh's own `read`/`write`/`edit`
+   tools actually use, which would have left every file read ungated.
+3. **Generic sinks are not fingerprints.** `curl -s -o /dev/null -w '%{http_code}'`
+   is the idiomatic way to ask for a status code, and treating `/dev/null` as
+   action identity made four *different* URLs collide on `sink:/dev/null` starting
+   with the second.
+4. **The volume caps ship at 6, not 4**, and **a denied call commits only the
+   fingerprints that hit.** Both were changed after live runs: the first because a
+   four-URL batch was blocked, the second because a denied `curl` was charging
+   `net:` for a URL it never fetched, locking the model out of that URL entirely.
 
 ## Development loop (dependency-free)
 
@@ -197,7 +310,8 @@ dsh --profile <name> --patch ./cordis.patch.yml "reply ok"
 Two things worth knowing:
 
 - **Never point this at a profile that serves a live UI** (in the reference
-  deployment that is the `web` profile). Boot a headless test profile instead.
+  deployment that is the `web` profile). Boot a headless test profile, or an
+  isolated `DSH_HOME`, instead.
 - Step 1 does not import the module, so a syntax or resolution error only surfaces
   in step 2. To confirm the gate really is wired in step 2, add a temporary
   `console.log(typeof ctx.tools.guard)` at the top of `apply` and remove it after
@@ -205,19 +319,50 @@ Two things worth knowing:
 
 ## Acceptance
 
-The deterministic pure-logic suite covers the important cases with no model or
-endpoint required:
-
 ```bash
-npm test          # or: node test/logic.test.mjs
+npm test          # node --test test/breaker.test.js
 ```
 
-It verifies, for a stable live `Agent` object: 1st identical `read` allowed →
-2nd denied (`REPEAT_TOOL_BLOCKED`, tool named, previous result quoted);
-property-order-insensitive keying; a different path/tool `write` chain allowed,
-then its 2nd identical denied; `todo_write` repeated twice never denied and never
-resets an unrelated chain; per-agent isolation; user-message reset re-allows a
-same call; and the same-path cap bounds varying-argument re-reads of one file.
+30 tests, no model or endpoint required. The suite mirrors the v2 spec's table
+(T1 ping-pong, T2/T3 description decoys, T4 unrelated calls, T5 curl↔wget, T6
+exclusion, T7 per-agent isolation, T8 volatile flags, T9 normalizer units, T10
+read paths, T11 denied calls still spend budget) and adds the plugin-level wiring
+(T12: the guard denies, quotes the previous result, survives a plugin notice,
+resets on a human turn; T12c: the fail-loud config contract) and the documented
+shape of the shipped defaults (T14/T14b).
+
+Three assertions worth singling out, because they are the ones that would have
+caught v1 — or that caught v2's own defaults:
+
+- every fingerprint of a `description: '1st'/'2nd'/'3rd'` call is asserted to
+  contain neither the decoy text nor the `timeoutMs` value;
+- the deny path is asserted to be reached for host-spelling ping-pong whose
+  `exact:` fingerprints differ;
+- four *different* URLs writing to `/dev/null` are asserted to all be allowed, and
+  a denied call is asserted **not** to spend `net:` budget on the URL it never
+  fetched.
+
+### Verified on a real model
+
+Beyond the unit suite, the plugin was driven end-to-end through the official
+`dsh-container` harness (`ghcr.io/snailium/dsh-container/dsh`) against a local
+Qwen3.8-27B on llama.cpp, in a throwaway `DSH_HOME`:
+
+| Scenario | Result |
+|---|---|
+| `curl -s -o /tmp/od.html https://open-data.canada.ca/` (`description: '1st'`) then the same fetch of `https://open.canada.ca/` (`'2nd'`) | 1st executed; 2nd **blocked before execution**, hits `net:open.canada.ca/ 2/2` and `sink:/tmp/od.html 2/2` |
+| `echo hello-repeat` twice, `description` `'1st'` / `'2nd'`, `timeoutMs` 60000 / 1000 | 1st executed; 2nd **blocked**, hits the identical cleaned command |
+| four **different** URLs, one `curl` each | all four allowed and returned 200 |
+
+### Real-pipeline check (no model needed)
+
+`test/pipeline.e2e.mjs` drives the genuine `ToolRuntime` with a stub `bash` body,
+which proves the denied call's body is never entered — offline and deterministically.
+It needs the dsh packages resolvable, so it is not part of CI:
+
+```bash
+DSH_NODE_MODULES=/path/to/dsh/node_modules/@deepseek-ai npm run test:pipeline
+```
 
 ## Releasing
 
@@ -255,47 +400,48 @@ the npm CLI explicitly because Node 22 bundles an older one.
 
 **Verified**
 
-- **Deterministic guard-logic suite** (`npm test`) — 29 assertions over a stable
-  live `Agent` object, covering the allow/deny matrix, canonicalization, tool
-  exclusion, per-agent isolation, and the user-message reset. Runs in CI on
-  Node 20 and 22 with no model or endpoint.
-- **Loads and applies on a real DSH boot.** Verified against
-  `@deepseek-ai/dsh` 0.1.2-rc.1 through a `--patch` overlay: the loader resolves
-  the module and `apply` runs with `ctx.tools.guard` present as a function — which
-  is only reachable once `inject: ['tools']` defers activation until the real
-  `ToolRuntime` is live.
+- **Deterministic suite** (`npm test`) — 30 tests covering the full fingerprint
+  matrix, decoy stripping, host folding, sink extraction, window arithmetic,
+  per-agent isolation, the user-message reset, and the fail-loud config contract.
+  Runs in CI on Node 20 and 22 with no model or endpoint.
+- **Loads and applies on a real DSH boot**, including as a profile bundle (the
+  `dsh.bundle` layer mounts the row by package specifier), verified against
+  `@deepseek-ai/dsh` 0.1.2-rc.1.
+- **Driven by a real model in the `dsh-container` harness** — the three scenarios
+  in [Verified on a real model](#verified-on-a-real-model), plus the real
+  `ToolRuntime` pipeline driven in-process with a stub tool body (which proves the
+  denied call's body is never entered).
 
 **Not covered here**
 
-- There is no end-to-end, model-driven trajectory in the suite (a model actually
-  issuing two identical `read` calls and receiving the blocked second one). The
-  deny behaviour is pinned by the deterministic suite instead; see
-  [Development loop](#development-loop-dependency-free) if you want to drive it
-  manually against a live profile.
+- The live-model runs are manual, not part of CI: they need a local inference
+  backend and the `dsh-container` image. `npm test` is the CI gate.
 
-**Intentional limits** — only *exact* repeats are caught (same tool, same
-canonical arguments, property order ignored). Two calls differing by one argument
-character, or achieving the same effect through different tools, are out of scope:
-the gate is a monotonic safety net, not a semantic deduplicator.
+**Intentional limits**
+
+- The breaker is a safety net, not a semantic deduplicator. Two genuinely
+  different commands that happen to write the same non-generic file collide on
+  `sink:`, and that is by design — the denial message tells the model to work from
+  what it has.
+- Fingerprints are computed from the *arguments*, never from the tool's output, so
+  a loop that varies only the working directory (`cd a && curl X` vs
+  `cd b && curl X`) still collides on `net:` but not on `cmd:`.
 
 ## Design notes
 
-- **Counting lives in the guard**, which runs for every tracked attempt (allowed
-  and denied) and commits state on allow *and* deny. `tools/post-execute` only
-  records the rendered result (for a high-quality deny message) and may emit the
-  `warnAfter` advisory through `additionalContexts`; it **never increments**.
-  That single counting locus is what prevents the guard/post-execute double count
-  the naive design smuggles in when both update the chain. The advisory is
-  additionally gated on being reachable — see
-  [About the advisory tier](#about-the-advisory-tier).
-- **Only consecutive repeats are caught.** The run resets when a call with a
-  different signature arrives, so the pattern `A, B, A, B, …` never trips the
-  gate. That is intentional (a consecutive-run detector, not a call counter), and
-  it is why the deny message says "in a row".
-- **Fail loud in `apply`**: no schemastery `Config` export (keeping index.js
+- **Counting lives in the guard and nowhere else.** That single locus is what
+  prevents the guard/post-execute double count, the reset-your-own-budget hole,
+  and the "denied call charges a resource it never fetched" hole.
+- **Windows, not consecutive runs.** v1's run counter reset as soon as a different
+  signature arrived, which is exactly the `A, B, A, B` pattern class C exploited.
+- **Fail loud in `apply`**: no schemastery `Config` export (keeping the plugin
   dependency-free is deliberate — `cordis.resolveConfig` passes config through
   unchanged when a plugin exports no `Config`), but every load-bearing invariant
-  (`denyAfter >= 2`, non-empty patterns, preview caps) is validated at load and
-  throws rather than silently degrading.
+  is validated at load and throws rather than silently degrading.
+- **The denial text is the model's only new information**, so it names the
+  fingerprints that hit with their counts, states explicitly that changing the
+  description / `timeoutMs` / `--max-time` / host spelling is not a new action,
+  and quotes the previous result inline. It contains no `<tool_call>`-shaped
+  markup.
 - **State is in-memory only**; a resumed session starts fresh (same tradeoff as
   the official reminder).

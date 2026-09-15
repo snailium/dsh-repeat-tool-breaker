@@ -5,6 +5,80 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-13
+
+The semantic-rewrite release. v1 counted *byte-identical consecutive* calls, so a
+model could stay in a loop simply by varying a presentation field or the host
+spelling; v2 strips decoys first and then counts semantic fingerprints over a
+sliding window.
+
+### Fixed
+
+- **`description: '1st'/'2nd'/'3rd'` (plus a churning `timeoutMs`) no longer
+  launders a repeat.** Decoy arguments are deleted *before* any fingerprint string
+  is built, so those calls become byte-identical and collide on `exact:`. The
+  suite asserts that no fingerprint of such a call contains the decoy text or the
+  timeout value.
+- **Host ping-pong is now caught.** `curl --max-time 60 open-data.canada.ca` ↔
+  `curl --max-time 30 open.canada.ca` previously alternated forever: the calls
+  were not consecutive-equal and the command was never normalized. `net:` folds
+  host aliases and strips the query, and `cmd:` strips volatile flags, so both
+  spellings collide — as does the same fetch re-issued through `wget`.
+- **A denied call no longer risks a free retry.** The guard commits a call on the
+  deny path too, so hammering a blocked call cannot reset its own budget.
+
+### Changed — breaking
+
+- Counting moved from a **consecutive-run counter** to a **per-agent sliding
+  window** (`window`, default 12 calls) over a *set* of fingerprints per call:
+  `exact:`, `cmd:`, `net:`, `site:`, `sink:`, `readpath:`, `writepath:`,
+  `family:http-fetch`, `verb:<cmd>`.
+- Configuration is now `{ window, previewChars, resultPreviewChars, exclude,
+  include, ignoreArgs, pathAliases, hostAliases, limits }`. The v1 keys
+  `denyAfter`, `warnAfter`, `registerAdvisory`, `maxSamePath`, `readTools` and
+  `matchReadBySubstring` are **removed**: passing one now throws at load with a
+  pointer at its replacement instead of being silently ignored.
+- The advisory tier (`warnAfter` / `registerAdvisory` / `additionalContexts`) was
+  removed. The guard denies; there is no separate soft-notice path. The official
+  `@deepseek-ai/dsh-repeat-tool-reminder` remains the soft tier.
+- `limits`, `ignoreArgs` and `hostAliases` merge one level deep over the defaults;
+  `exclude`, `include` and `pathAliases` **replace** the default arrays.
+- The package is now `index.js` + `lib/` (`defaults`, `normalize`, `fingerprints`,
+  `window`, `message`); the test entry point is
+  `node --test test/breaker.test.js` (the old `test/logic.test.mjs` was
+  superseded).
+
+### Added
+
+- A per-fingerprint **hit list** in the denial message, so the model is told
+  exactly which identities collided and how many times, that cosmetic variation
+  is not a new action, and what the previous result was.
+
+### Deliberate deviations from the v2 specification
+
+Four, each a consequence of running the plugin against a live model on the
+reference deployment (Qwen3.8-27B via the `dsh-container` harness). All are
+reversible from config alone.
+
+- File reads and writes get separate counters (`readpath`, `writepath`) instead of
+  sharing one `sink:`. The spec's single counter would deny the second half of the
+  ordinary `read foo.ts` → `write foo.ts` pair, which is an edit, not a loop.
+- `file_path` was added to `pathAliases`; the spec's list omitted the key dsh's own
+  `read`/`write`/`edit` tools actually use, which would have left every file read
+  ungated.
+- **Generic sinks are not fingerprints.** A live run of "get the status code of
+  these four URLs" fetched `https://example.com/` and then had every following
+  call denied, because all four used `curl -s -o /dev/null` and therefore shared
+  `sink:/dev/null`. `/dev/null` (and the other null devices, and `-`) say nothing
+  about which resource was fetched.
+- **The volume caps ship at 6, not 4**, and **a denied call commits only the
+  fingerprints that hit.** The first was changed because the same four-URL run
+  also tripped `family:http-fetch: 4` and `verb:curl: 4`; the second because a
+  denied `curl https://example.org` was charging `net:example.org/` for a fetch
+  that never happened, after which the model could not reach that URL through any
+  tool for the rest of the turn. Hammering a denied call stays blocked either way,
+  since the hitting fingerprint is already at its cap.
+
 ## [0.1.3] - 2026-09-12
 
 ### Fixed
@@ -87,7 +161,8 @@ All notable changes to this project are documented here. This project adheres to
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.0...v0.1.1

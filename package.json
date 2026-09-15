@@ -1,7 +1,7 @@
 {
   "name": "dsh-repeat-tool-breaker",
-  "version": "0.1.3",
-  "description": "Hard break on repeated identical tool calls: a synchronous ctx.tools.guard monotonic gate that denies the 2nd identical (tool name + canonical arguments) call per agent, with an optional same-path read guard and advisory first-repeat warning.",
+  "version": "0.2.0",
+  "description": "Hard break on repeated tool calls: a synchronous ctx.tools.guard gate that counts semantic fingerprints (net/site/sink/cmd/exact) over a per-agent sliding window, ignoring decoy arguments such as description and timeoutMs.",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -24,6 +24,7 @@
   },
   "files": [
     "index.js",
+    "lib",
     "cordis.patch.yml",
     "README.md",
     "CHANGELOG.md",
@@ -35,7 +36,8 @@
     }
   },
   "scripts": {
-    "test": "node test/logic.test.mjs"
+    "test": "node --test test/breaker.test.js",
+    "test:pipeline": "node test/pipeline.e2e.mjs"
   },
   "engines": {
     "node": ">=20"
