@@ -144,7 +144,7 @@ denies the call, so dodging one (a new host spelling) still collides on another
 | `site:<last-2-labels>` | registrable-ish site of each URL (IP literals stand alone) | C, drive-by crawling |
 | `sink:<path>` | `-o`/`--output`/`-O`/`>`/`>>`/`tee` target of a shell command — except generic destinations (`/dev/null`, `-`, …), which say nothing about *which* resource was fetched | C |
 | `readpath:<path>` | a file **read** (`read`, `read_file`, any `/read/i` name) | re-reading one file with varying arguments |
-| `writepath:<path>` | a file **write/edit** | rewriting one file over and over |
+| `writepath:<path>` | a file **write/edit** — **disabled by default** (see below) | rewriting one file over and over |
 | `family:http-fetch` | every `curl` / `wget` / `http` / `httpie` / URL-taking tool call | a fetch loop that keeps changing everything else |
 | `verb:<cmd>` | the first non-wrapper command word (`sudo`, `timeout 30`, `FOO=1` are transparent) | tool-swapping within one verb |
 
@@ -203,7 +203,7 @@ at which point `ctx.tools.guard` is the genuine method.
           net: 2
           sink: 2
           readpath: 2
-          writepath: 3
+          writepath: null           # disabled: editing one file repeatedly is work, not a loop
           site: 3
           'family:http-fetch': 6
           'verb:curl': 6
@@ -239,8 +239,13 @@ The table mixes *precise* caps with *broad* ones, and the difference matters:
 - **precise, resource-scoped, cap 2**: `exact`, `cmd`, `net`, `sink`, `readpath`.
   These fire only when the same action actually happens again. They are what
   catches loops, and they should stay at 2.
+- **disabled by default**: `writepath`. Editing one file repeatedly is ordinary
+  work — the reference deployment hit a `writepath` cap of 3 on the third
+  consecutive edit of a single document — and the loop it guarded against
+  (rewriting a file with identical content) is already covered by `exact`. Set it
+  to a number to restore a per-file write budget.
 - **broad, budget-scoped, per window**: `site: 3`, `family:http-fetch: 6`,
-  `verb:curl: 6`, `verb:wget: 6`, `writepath: 3`. These fire on **volume**, not on
+  `verb:curl: 6`, `verb:wget: 6`. These fire on **volume**, not on
   repetition, so they are backstops for a runaway crawl — not loop detectors.
 
 The broad caps were originally 4, and a live run on the reference deployment
@@ -280,7 +285,8 @@ reference deployment; each is reversible from config alone.
    writes of one path into a single `sink:` counter, which would deny the second
    half of the completely ordinary pair `read foo.ts` → `write foo.ts`. Reads and
    writes are different actions, so they get different counters (`readpath`,
-   capped at 2; `writepath`, capped at 3). `sink:` now means what §3.6 defined it
+   capped at 2; `writepath`, **disabled by default since 0.2.1**). `sink:` now means
+   what §3.6 defined it
    as: where a *shell command* writes its bytes.
 2. **`file_path` added to `pathAliases`.** The spec's list (`path`, `filePath`,
    `file`, `target_file`) does not include the key dsh's own `read`/`write`/`edit`

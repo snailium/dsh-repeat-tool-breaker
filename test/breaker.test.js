@@ -136,6 +136,28 @@ test('T4b: read then write on the SAME path is an edit, not a loop', () => {
   assert.deepEqual(run(tracker, edit).hits, [])
 })
 
+test('T4c: iterating on one file is never blocked (writepath is disabled by default)', () => {
+  const tracker = createTracker(cfg)
+  // The reference deployment hit a writepath cap of 3 on the third consecutive
+  // edit of a single document (a SKILL.md) minutes after installing 0.2.0.
+  // EDITING the same file repeatedly with NEW content is ordinary work; only a
+  // byte-identical rewrite is a loop, and `exact:` already covers that.
+  for (let i = 0; i < 8; i += 1) {
+    const step = {
+      name: 'edit',
+      arguments: { file_path: '/w/skill.md', old_string: `a${i}`, new_string: `b${i}` },
+      agent: A,
+    }
+    assert.deepEqual(run(tracker, step).hits, [], `edit #${i + 1} must be allowed`)
+  }
+  const again = {
+    name: 'edit',
+    arguments: { file_path: '/w/skill.md', old_string: 'a3', new_string: 'b3' },
+    agent: A,
+  }
+  assert.ok(run(tracker, again).hits.length > 0, 'a byte-identical re-edit is still caught by exact:')
+})
+
 // ---------------------------------------------------------------------------
 // T5 / T8 — transport-level equivalence
 // ---------------------------------------------------------------------------
@@ -418,7 +440,7 @@ test('T14: shipped defaults are the v2 table', () => {
     net: 2,
     sink: 2,
     readpath: 2,
-    writepath: 3,
+    writepath: null,
     site: 3,
     'family:http-fetch': 6,
     'verb:curl': 6,

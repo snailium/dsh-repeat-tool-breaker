@@ -5,6 +5,22 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-15
+
+### Fixed
+
+- **`writepath` is disabled by default** — `null` instead of `3`. Editing one file
+  repeatedly is ordinary work, not a loop: the reference deployment hit the cap of
+  3 on the **third consecutive edit of a single document** within minutes of
+  installing 0.2.0, while writing a SKILL.md. The loop the cap was meant to catch
+  — rewriting a file with the same content — is already covered by `exact`
+  (cap 2). Set `limits.writepath` to a number to restore a per-file write budget.
+
+### Notes
+
+- Not a breaking change: `null` was already a valid value for a limit, so this
+  only moves a default. Nothing in the configuration schema or public API changed.
+
 ## [0.2.0] - 2026-09-13
 
 The semantic-rewrite release. v1 counted *byte-identical consecutive* calls, so a
@@ -161,7 +177,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.1...v0.1.2
