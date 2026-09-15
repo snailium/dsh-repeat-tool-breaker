@@ -136,12 +136,12 @@ test('T4b: read then write on the SAME path is an edit, not a loop', () => {
   assert.deepEqual(run(tracker, edit).hits, [])
 })
 
-test('T4c: iterating on one file is never blocked (writepath is disabled by default)', () => {
+test('T4c: iterating on one file is never blocked — a file action is identified by POSITION', () => {
   const tracker = createTracker(cfg)
-  // The reference deployment hit a writepath cap of 3 on the third consecutive
-  // edit of a single document (a SKILL.md) minutes after installing 0.2.0.
-  // EDITING the same file repeatedly with NEW content is ordinary work; only a
-  // byte-identical rewrite is a loop, and `exact:` already covers that.
+  // Editing the same file repeatedly at DIFFERENT positions is ordinary work.
+  // The reference deployment hit a path-only cap on the third consecutive edit
+  // of a single document (a SKILL.md) minutes after installing 0.2.0, and a
+  // path-only cap of 2 on re-reading a file it was already editing.
   for (let i = 0; i < 8; i += 1) {
     const step = {
       name: 'edit',
@@ -150,12 +150,20 @@ test('T4c: iterating on one file is never blocked (writepath is disabled by defa
     }
     assert.deepEqual(run(tracker, step).hits, [], `edit #${i + 1} must be allowed`)
   }
+  // ...and so is reading one file at different offsets.
+  for (const offset of [0, 200, 400, 600]) {
+    const reader = { name: 'read', arguments: { file_path: '/w/skill.md', offset, limit: 50 }, agent: A }
+    assert.deepEqual(run(tracker, reader).hits, [], `read at offset ${offset} must be allowed`)
+  }
+  // The SAME position with the SAME arguments is the same action, and is denied.
   const again = {
     name: 'edit',
     arguments: { file_path: '/w/skill.md', old_string: 'a3', new_string: 'b3' },
     agent: A,
   }
-  assert.ok(run(tracker, again).hits.length > 0, 'a byte-identical re-edit is still caught by exact:')
+  const deny = run(tracker, again)
+  assert.ok(deny.hits.length > 0, 'a byte-identical re-edit is still caught')
+  assert.ok(hit(deny.hits, 'exact:'), 'the position-aware fingerprint is exact:')
 })
 
 // ---------------------------------------------------------------------------
@@ -275,12 +283,15 @@ test('T9f: firstPathArg and limitFor', () => {
 // T10 / T11 — read paths and deny bookkeeping
 // ---------------------------------------------------------------------------
 
-test('T10: reading the same file twice is denied', () => {
+test('T10: the same file at the same position twice is denied, a new position is not', () => {
   const tracker = createTracker(cfg)
   const read = (extra = {}) => ({ name: 'read', arguments: { file_path: '/w/README.md', ...extra }, agent: A })
   assert.deepEqual(run(tracker, read()).hits, [])
-  const second = run(tracker, read({ offset: 0 }))
-  assert.ok(hit(second.hits, 'readpath:'), `expected readpath: hit, got ${JSON.stringify(second.hits)}`)
+  // Different position -> different arguments -> different action.
+  assert.deepEqual(run(tracker, read({ offset: 120 })).hits, [])
+  // Same position again -> same arguments -> denied.
+  const repeat = run(tracker, read({ offset: 120 }))
+  assert.ok(hit(repeat.hits, 'exact:'), `expected an exact: hit, got ${JSON.stringify(repeat.hits)}`)
 })
 
 test('T11: a denied call still consumes its budget (hammering stays blocked)', () => {
@@ -439,8 +450,6 @@ test('T14: shipped defaults are the v2 table', () => {
     cmd: 2,
     net: 2,
     sink: 2,
-    readpath: 2,
-    writepath: null,
     site: 3,
     'family:http-fetch': 6,
     'verb:curl': 6,

@@ -5,6 +5,29 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-15
+
+### Changed
+
+- **File operations are no longer counted by path.** `read`/`write`/`edit` are
+  identified by **position** through `exact:` — the same file at the same offset,
+  or the same replacement string, is the same action and is denied; a different
+  offset or a different region is a different action and is never blocked. The
+  `readpath` and `writepath` limits and their fingerprints were removed.
+
+  Both were introduced in 0.2.0 to give a per-file budget, and both had to go
+  after live use: `writepath: 3` denied the third consecutive edit of a single
+  document (0.2.1 disabled it), and `readpath: 2` denied the *second read of a
+  file that was being edited* — a step dsh's own fs-observation policy requires
+  before every edit, so the plugin was blocking the workflow it exists to protect.
+
+  Nothing is lost: an identical re-read or re-edit still collides on `exact:`.
+
+### Removed
+
+- Limits `readpath` and `writepath`, and the `readpath:`/`writepath:`
+  fingerprints. A config that still lists them is accepted but inert.
+
 ## [0.2.1] - 2026-09-15
 
 ### Fixed
@@ -48,6 +71,7 @@ sliding window.
 - Counting moved from a **consecutive-run counter** to a **per-agent sliding
   window** (`window`, default 12 calls) over a *set* of fingerprints per call:
   `exact:`, `cmd:`, `net:`, `site:`, `sink:`, `readpath:`, `writepath:`,
+  (the last two were removed again in 0.2.2 — see below)
   `family:http-fetch`, `verb:<cmd>`.
 - Configuration is now `{ window, previewChars, resultPreviewChars, exclude,
   include, ignoreArgs, pathAliases, hostAliases, limits }`. The v1 keys
@@ -177,7 +201,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.1.2...v0.1.3

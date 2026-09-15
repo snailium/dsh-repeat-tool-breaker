@@ -143,8 +143,6 @@ denies the call, so dodging one (a new host spelling) still collides on another
 | `net:<host><path>` | `http(s)` URL with the scheme defaulted, `www.` and default ports dropped, host aliases folded, query/fragment discarded, trailing slash trimmed | C |
 | `site:<last-2-labels>` | registrable-ish site of each URL (IP literals stand alone) | C, drive-by crawling |
 | `sink:<path>` | `-o`/`--output`/`-O`/`>`/`>>`/`tee` target of a shell command — except generic destinations (`/dev/null`, `-`, …), which say nothing about *which* resource was fetched | C |
-| `readpath:<path>` | a file **read** (`read`, `read_file`, any `/read/i` name) | re-reading one file with varying arguments |
-| `writepath:<path>` | a file **write/edit** — **disabled by default** (see below) | rewriting one file over and over |
 | `family:http-fetch` | every `curl` / `wget` / `http` / `httpie` / URL-taking tool call | a fetch loop that keeps changing everything else |
 | `verb:<cmd>` | the first non-wrapper command word (`sudo`, `timeout 30`, `FOO=1` are transparent) | tool-swapping within one verb |
 
@@ -202,8 +200,6 @@ at which point `ctx.tools.guard` is the genuine method.
           cmd: 2
           net: 2
           sink: 2
-          readpath: 2
-          writepath: null           # disabled: editing one file repeatedly is work, not a loop
           site: 3
           'family:http-fetch': 6
           'verb:curl': 6
@@ -236,14 +232,16 @@ that isn't yet in the composed tree.)
 
 The table mixes *precise* caps with *broad* ones, and the difference matters:
 
-- **precise, resource-scoped, cap 2**: `exact`, `cmd`, `net`, `sink`, `readpath`.
+- **precise, resource-scoped, cap 2**: `exact`, `cmd`, `net`, `sink`.
   These fire only when the same action actually happens again. They are what
   catches loops, and they should stay at 2.
-- **disabled by default**: `writepath`. Editing one file repeatedly is ordinary
-  work — the reference deployment hit a `writepath` cap of 3 on the third
-  consecutive edit of a single document — and the loop it guarded against
-  (rewriting a file with identical content) is already covered by `exact`. Set it
-  to a number to restore a per-file write budget.
+- **not counter-based at all**: file operations. There is no `readpath` or
+  `writepath` limit. A file action is identified by its **position** through
+  `exact:` — the same file at the same offset, or the same replacement string, is
+  the same action and is denied; a different offset or a different region is a
+  different action and is never blocked. 0.2.0 shipped path-only counters for
+  these and they both had to be removed after blocking ordinary work on the
+  reference deployment (see [File operations](#file-operations)).
 - **broad, budget-scoped, per window**: `site: 3`, `family:http-fetch: 6`,
   `verb:curl: 6`, `verb:wget: 6`. These fire on **volume**, not on
   repetition, so they are backstops for a runaway crawl — not loop detectors.
@@ -281,13 +279,15 @@ If instead you want the original, more aggressive table back, restate it:
 All four are consequences of running the plugin against a live model on the
 reference deployment; each is reversible from config alone.
 
-1. **`writepath` instead of `sink` for file tools.** The spec folded reads and
-   writes of one path into a single `sink:` counter, which would deny the second
-   half of the completely ordinary pair `read foo.ts` → `write foo.ts`. Reads and
-   writes are different actions, so they get different counters (`readpath`,
-   capped at 2; `writepath`, **disabled by default since 0.2.1**). `sink:` now means
-   what §3.6 defined it
-   as: where a *shell command* writes its bytes.
+1. **No path-only counter for file tools at all.** The spec folded reads and
+   writes of one path into a single `sink:` counter, which denies the second half
+   of the ordinary pair `read foo.ts` → `write foo.ts`. 0.2.0 replaced it with
+   separate `readpath`/`writepath` counters and 0.2.2 removed both, because a
+   path-only counter cannot see POSITION: it blocked re-reading a file that was
+   being edited, and blocked the third iteration on a single document. File
+   actions are identified by `exact:` alone, which is position-aware by
+   construction. `sink:` still means what §3.6 defined it as: where a *shell
+   command* writes its bytes.
 2. **`file_path` added to `pathAliases`.** The spec's list (`path`, `filePath`,
    `file`, `target_file`) does not include the key dsh's own `read`/`write`/`edit`
    tools actually use, which would have left every file read ungated.

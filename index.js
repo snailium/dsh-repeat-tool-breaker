@@ -29,8 +29,10 @@
  *     path, alias-folded, query stripped), `site:`, `sink:` (where the bytes
  *     are written), `cmd:` (verb + command with volatile flags removed),
  *     `family:`/`verb:` — so alternating spellings still collide (C).
- *   - `writepath:`/`readpath:` for file tools, counted separately because
- *     `read foo` then `write foo` is an edit, not a loop.
+ *   - nothing path-only for file tools: `read`/`write`/`edit` are identified by
+ *     POSITION through `exact:` (same file at the same offset, or the same
+ *     replacement string). A different offset or region is a different action,
+ *     and a path-only counter cannot tell the two apart — see CHANGELOG 0.2.2.
  *
  * Counting lives in the GUARD and nowhere else: the guard commits a call on
  * BOTH outcomes (allow and deny) — every fingerprint when the call ran, only the
