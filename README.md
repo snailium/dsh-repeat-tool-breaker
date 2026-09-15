@@ -378,6 +378,46 @@ It needs the dsh packages resolvable, so it is not part of CI:
 DSH_NODE_MODULES=/path/to/dsh/node_modules/@deepseek-ai npm run test:pipeline
 ```
 
+### Full-boot compatibility check (any dsh version)
+
+`test/compat/` boots a **real** `dsh` of the version under test with this plugin
+mounted as a profile bundle, and drives it with a scripted mock model — no GPU,
+no real endpoint. `mock-llm.py` speaks enough of the OpenAI streaming protocol to
+make the agent issue the *same* `bash` call four times in a row, and
+`run-compat.sh` asserts the trajectory: attempts `1..cap-1` executed, the rest
+denied with `REPEAT_TOOL_BLOCKED`.
+
+```bash
+DSH_PREFIX=/tmp/dsh-compat
+mkdir -p "$DSH_PREFIX" && cd "$DSH_PREFIX" && npm init -y
+npm install --no-audit --no-fund @deepseek-ai/dsh@<version>
+
+cd <this repo>
+DSH_PREFIX=$DSH_PREFIX ./test/compat/run-compat.sh
+```
+
+It checks what unit tests cannot: that the loader accepts the `dsh.bundle`
+manifest, that the bundle's patch layer mounts the row, that `apply()` runs with
+`inject: ['tools']` satisfied, and that a denial reaches the model as an
+`isError` tool result. Reference output on `@deepseek-ai/dsh` 0.1.5-rc.2:
+
+```
+=== dsh under test ===
+0.1.5-rc.2
+=== bundle mounts? ===
+ok
+=== cap for action identity: 3 (mock issues 4 identical calls) ===
+=== real headless run ===
+compat run complete
+=== trajectory ===
+  attempt 1: isError=False | compat-check
+  attempt 2: isError=False | compat-check
+  attempt 3: isError=True | Error: REPEAT_TOOL_BLOCKED: ...
+  attempt 4: isError=True | Error: REPEAT_TOOL_BLOCKED: ...
+
+COMPAT: PASS (2 executed, 2 denied, cap=3)
+```
+
 ## Releasing
 
 Publishing runs through `.github/workflows/publish.yml`, which is
@@ -419,8 +459,15 @@ the npm CLI explicitly because Node 22 bundles an older one.
   per-agent isolation, the user-message reset, and the fail-loud config contract.
   Runs in CI on Node 20 and 22 with no model or endpoint.
 - **Loads and applies on a real DSH boot**, including as a profile bundle (the
-  `dsh.bundle` layer mounts the row by package specifier), verified against
-  `@deepseek-ai/dsh` 0.1.2-rc.1.
+  `dsh.bundle` layer mounts the row by package specifier). Verified on
+  `@deepseek-ai/dsh` **0.1.2-rc.1** (the reference deployment) and
+  **0.1.5-rc.2** (via `test/compat/`, which boots the real CLI and asserts the
+  denial in the trajectory).
+- **API surface is unchanged between those two versions**: `ToolGuard`,
+  `guard()`, the `tools/pre-execute` / `tools/post-execute` signatures,
+  `ToolExecutionInput`/`ToolExecution`, the decision unions and the
+  `agent/pre-step` payload all diff clean, and the tool names the plugin keys on
+  (`bash`/`pwsh`, `read`/`write`/`edit`, `web_fetch`/`web_search`) are stable.
 - **Driven by a real model in the `dsh-container` harness** — the three scenarios
   in [Verified on a real model](#verified-on-a-real-model), plus the real
   `ToolRuntime` pipeline driven in-process with a stub tool body (which proves the

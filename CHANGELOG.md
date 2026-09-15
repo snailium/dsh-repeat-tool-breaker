@@ -5,6 +5,12 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `test/compat/` — a full-boot compatibility harness (scripted mock model + a
+  real `dsh` of the version under test). Repository tooling only; `test/` is not
+  published, so there is no npm release for it.
+
 ## [0.2.3] - 2026-09-15
 
 ### Changed
