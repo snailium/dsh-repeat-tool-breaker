@@ -47,8 +47,8 @@
  * tolerates.
  */
 
-import { compileTracked, isTracked, fingerprints } from './lib/fingerprints.js'
-import { denyMessage, renderResult } from './lib/message.js'
+import { allHitsRelaxable, blockingHits, compileTracked, isTracked, fingerprints } from './lib/fingerprints.js'
+import { denyMessage, localAskMessage, renderResult } from './lib/message.js'
 import { createTracker, hasUserMessage } from './lib/window.js'
 import { mergeDefaults, validateCfg } from './lib/defaults.js'
 
@@ -82,6 +82,54 @@ export function apply(ctx, config = {}) {
   const cfg = validateCfg(mergeDefaults(config))
   const tracker = createTracker(cfg)
   const tracked = compileTracked(cfg)
+  /**
+   * Executions this plugin has asked about, mapped to what it would have denied.
+   *
+   * This is how the two halves of the `ask` policy talk to each other, and it
+   * rests on one fact of the pipeline (dsh-tools `prepareExecution`):
+   *
+   *   - a REJECTED ask never reaches the guard — the registry materializes the
+   *     denial straight from the approval decision — so a pending entry left in
+   *     `post-execute` means "the operator said no";
+   *   - an APPROVED ask does reach the guard, so an entry consumed there means
+   *     "the operator said yes". The guard cannot be told otherwise: it runs
+   *     AFTER the approval resolves and can only deny.
+   */
+  const pendingAsk = new WeakMap()
+  /** Disposers of everything this plugin registered, run by the returned teardown. */
+  const teardown = []
+
+  /**
+   * Decide the fate of one call: its fingerprints, the hits, and what still
+   * blocks once the agent's local exemption is taken into account.
+   * @param exec - the pending tool execution.
+   * @param agent - the calling agent.
+   */
+  const evaluate = (exec, agent) => {
+    const { fps, local } = fingerprints(exec, cfg)
+    const hits = tracker.wouldExceed(agent, fps)
+    const exempt = tracker.isLocalExempt(agent)
+    return { fps, local, hits, blocking: blockingHits(hits, local, exempt), exempt }
+  }
+
+  /**
+   * Offer the operator the choice on a local block, once per turn. Runs before
+   * the guard, because a guard can only deny — it has no way to ask.
+   */
+  const onPre = ctx.on('tools/pre-execute', async (exec, next) => {
+    if (cfg.localHosts !== 'ask') return next()
+    const { name, agent } = parts(exec)
+    // An ask is only worth making when local traffic is the ONLY reason this call
+    // would be denied; a real repeat must stay a straight denial.
+    if (agent === null || !tracked(name) || tracker.isLocalRefused(agent) || tracker.isLocalExempt(agent)) {
+      return next()
+    }
+    const { fps, local, hits, blocking } = evaluate(exec, agent)
+    if (blocking.length !== hits.length || !allHitsRelaxable(hits, local)) return next()
+    pendingAsk.set(exec, { fps, hits })
+    return { kind: 'ask', reason: localAskMessage(hits, cfg) }
+  })
+  teardown.push(onPre)
 
   /**
    * The synchronous monotonic guard — the one and only counter. It must never
@@ -90,22 +138,48 @@ export function apply(ctx, config = {}) {
   const guard = (exec) => {
     const { name, agent } = parts(exec)
     if (agent === null || !tracked(name)) return undefined
-    const fps = fingerprints(exec, cfg)
-    const hits = tracker.wouldExceed(agent, fps)
-    tracker.commit(agent, fps, hits)
-    if (hits.length === 0) return undefined
-    return denyMessage({ name, hits, lastResult: tracker.slot(agent).lastResult, cfg })
+
+    // Reaching the guard with a pending ask means the operator approved it.
+    if (pendingAsk.has(exec)) {
+      pendingAsk.delete(exec)
+      tracker.exemptLocal(agent)
+    }
+
+    const { fps, local, hits, blocking } = evaluate(exec, agent)
+    tracker.commit(agent, fps, blocking)
+    if (blocking.length === 0) return undefined
+    const localOnly = allHitsRelaxable(blocking, local)
+    return denyMessage({
+      name,
+      hits: blocking,
+      lastResult: tracker.slot(agent).lastResult,
+      cfg,
+      local: localOnly ? (tracker.isLocalRefused(agent) ? 'refused' : 'policy') : undefined,
+    })
   }
 
-  const teardown = []
+
   const disposeGuard = ctx.tools.guard(guard)
   if (typeof disposeGuard === 'function') teardown.push(disposeGuard)
 
   // Records the settled result text quoted by a later denial. No counting here:
   // denied calls also reach this waterfall, so counting would double-count.
+  //
+  // It also settles the fate of an ask. A rejected ask never reached the guard
+  // (see `pendingAsk`), so a pending entry here means the operator declined:
+  // spend the budget anyway, so the next identical local call is denied outright
+  // instead of re-asking, and remember the refusal for the rest of the turn.
   const onPost = ctx.on('tools/post-execute', async (exec, result, next) => {
     const { name, agent } = parts(exec)
-    if (agent !== null && tracked(name) && result?.isError !== true) {
+    if (agent === null) return next()
+    const pending = pendingAsk.get(exec)
+    if (pending !== undefined) {
+      pendingAsk.delete(exec)
+      tracker.refuseLocal(agent)
+      tracker.commit(agent, pending.fps, pending.hits)
+      return next()
+    }
+    if (tracked(name) && result?.isError !== true) {
       const text = renderResult(result)
       if (text) tracker.slot(agent).lastResult = text.slice(0, cfg.resultPreviewChars)
     }

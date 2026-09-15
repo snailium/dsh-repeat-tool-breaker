@@ -1,6 +1,6 @@
 {
   "name": "dsh-repeat-tool-breaker",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Hard break on repeated tool calls: a synchronous ctx.tools.guard gate that counts semantic fingerprints (net/site/sink/cmd/exact) over a per-agent sliding window, ignoring decoy arguments such as description and timeoutMs.",
   "keywords": [
     "dsh",

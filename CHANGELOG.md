@@ -5,6 +5,40 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-15
+
+### Added
+
+- **`localHosts`: `deny` | `ask` | `allow`** — local addresses (`localhost`,
+  loopback, RFC1918, link-local) are now their own class instead of being counted
+  as an ordinary web site. The `site:` budget was blocking ordinary development
+  loops: on the reference deployment a handful of calls that merely *mentioned* a
+  loopback URL tripped `site:127.0.0.1` while nothing was being crawled.
+
+  - `deny` (default) keeps today's behaviour and names the knob in the message.
+  - `ask` offers the operator a prompt, **once per turn**; approving exempts local
+    targets for the rest of that turn, declining stops the asking until the next
+    human message. It belongs in a profile with a UI — a headless profile should
+    keep `deny`, where an open question would stall the turn. Hence: configure it
+    per profile.
+  - `allow` never fingerprints local traffic.
+
+- `fingerprints()` now reports whether a call is **local** (it mentions at least
+  one URL and every URL it mentions is local), which is what the policy acts on.
+
+### Notes
+
+- Only the target-scoped fingerprints (`net`, `site`, `sink`, `family`, `verb`)
+  are ever relaxed: `exact` and `cmd` identify the ACTION, and a byte-identical
+  repeat is a loop whether or not it points at localhost. A call mentioning even
+  one public URL is not a local call.
+- An ask is only made when local traffic is the *sole* reason for the block, so a
+  genuine repeat is a straight denial rather than a prompt.
+- `ask` had to be split across two hooks: `tools/pre-execute` can ask but cannot
+  deny, and `ctx.tools.guard` can deny but cannot ask. The pipeline hands a
+  rejected ask straight to `post-execute` and never runs the guard, so "the guard
+  saw this execution" is exactly the approval signal.
+
 ## [0.2.4] - 2026-09-15
 
 ### Removed
@@ -244,7 +278,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.1...v0.2.2

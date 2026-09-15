@@ -14,12 +14,20 @@ import {
   extractSink,
   extractUrls,
   firstVerb,
+  isLocalHost,
   normUrl,
   omitIgnored,
   stripVolatileFlags,
   tokenize,
 } from '../lib/normalize.js'
-import { exactFingerprint, fingerprints, isGenericSink, isTracked, limitFor } from '../lib/fingerprints.js'
+import {
+  allHitsRelaxable,
+  exactFingerprint,
+  fingerprints,
+  isGenericSink,
+  isTracked,
+  limitFor,
+} from '../lib/fingerprints.js'
 import { createTracker, hasUserMessage } from '../lib/window.js'
 import { denyMessage, renderResult } from '../lib/message.js'
 import { apply, name as PLUGIN_NAME } from '../index.js'
@@ -41,10 +49,10 @@ const bash = (command, extra = {}, agent = A) => ({
 
 /** Mirror of the guard's decision step: predict, then commit. */
 function run(tracker, exec, config = cfg) {
-  const fps = fingerprints(exec, config)
+  const { fps, local } = fingerprints(exec, config)
   const hits = tracker.wouldExceed(exec.agent, fps)
   tracker.commit(exec.agent, fps, hits)
-  return { hits, fps }
+  return { hits, fps, local }
 }
 
 const hit = (hits, prefix) => hits.some((entry) => entry.fp.startsWith(prefix))
@@ -225,8 +233,8 @@ test('T5: curl and wget fetching the same URL into the same file collide', () =>
 })
 
 test('T8: volatile flags do not change the cmd: fingerprint', () => {
-  const a = fingerprints(bash('curl -sS --max-time 60 --retry 3 https://a.example.com/x -o f'), cfg)
-  const b = fingerprints(bash('curl --max-time 30 --retry 0 https://a.example.com/x -o f'), cfg)
+  const a = fingerprints(bash('curl -sS --max-time 60 --retry 3 https://a.example.com/x -o f'), cfg).fps
+  const b = fingerprints(bash('curl --max-time 30 --retry 0 https://a.example.com/x -o f'), cfg).fps
   const cmds = (list) => list.filter((fp) => fp.startsWith('cmd:'))
   assert.equal(cmds(a).length, 1)
   assert.deepEqual(cmds(a), cmds(b))
@@ -252,7 +260,7 @@ test('T6b: an excluded tool never enters the window', () => {
   const tracker = createTracker(cfg)
   for (let i = 0; i < 10; i += 1) {
     const exec = { name: 'todo_write', arguments: { todos: [] }, agent: A }
-    const fps = fingerprints(exec, cfg)
+    const { fps } = fingerprints(exec, cfg)
     assert.equal(isTracked(exec.name, cfg), false, 'the caller (guard) must skip it before this point')
     void fps
   }
@@ -508,6 +516,7 @@ test('T14: shipped defaults are the v2 table', () => {
     'verb:curl': 6,
     'verb:wget': 6,
   })
+  assert.equal(DEFAULTS.localHosts, 'deny', 'the default must be safe for an unattended profile')
   assert.deepEqual(DEFAULTS.exclude, ['todo_write'])
   // Removed in 0.2.4: the key only ever fed the path-only file fingerprints, which
   // 0.2.2 deleted. A config that still lists it is accepted and inert.
@@ -528,4 +537,138 @@ test('T14b: DOCUMENTED BEHAVIOR — the volume cap on http fetching is a backsto
   }
   const sixth = run(tracker, bash('curl -s -o /dev/null https://f.example.dev/p'))
   assert.ok(hit(sixth.hits, 'family:http-fetch'), 'family:http-fetch stops a runaway crawl at 6 per window')
+})
+
+// ---------------------------------------------------------------------------
+// T17+ — local-address policy (`localHosts`)
+// ---------------------------------------------------------------------------
+
+test('T17: isLocalHost covers loopback, private ranges, and link-local', () => {
+  for (const host of ['localhost', 'api.localhost', '127.0.0.1', '127.9.9.9', '::1',
+    '10.1.2.3', '192.168.111.90', '172.16.0.1', '172.31.255.255', '169.254.1.1',
+    '0.0.0.0', 'fd00::1', 'fe80::1']) {
+    assert.equal(isLocalHost(host), true, `${host} is local`)
+  }
+  for (const host of ['example.com', 'open.canada.ca', '8.8.8.8', '172.32.0.1', '172.15.0.1',
+    '192.169.0.1', '2606:4700::1111']) {
+    assert.equal(isLocalHost(host), false, `${host} is not local`)
+  }
+})
+
+test('T17b: a call is local only when EVERY url it mentions is local', () => {
+  assert.equal(fingerprints(bash('curl -s http://127.0.0.1:18999/x -o /tmp/o'), cfg).local, true)
+  assert.equal(fingerprints(bash('curl -s https://example.com/x'), cfg).local, false)
+  assert.equal(
+    fingerprints(bash('curl -s http://127.0.0.1:18999/x https://example.com/y'), cfg).local,
+    false,
+    'one public url makes the whole call non-local',
+  )
+  assert.equal(fingerprints(bash('ls -la'), cfg).local, false, 'a call with no url is not a local call')
+})
+
+test('T18: the default policy denies local calls and names the knob', () => {
+  const tracker = createTracker(cfg)
+  assert.equal(cfg.localHosts, 'deny')
+  const call = () => bash(`curl -s -o /dev/null http://127.0.0.1:18999/${Math.random()}`)
+  let last
+  for (let i = 0; i < CAP; i += 1) last = run(tracker, call())
+  const { fps, local } = fingerprints(bash('curl -s -o /dev/null http://127.0.0.1:18999/x'), cfg)
+  assert.equal(local, true)
+  const hits = tracker.wouldExceed(A, ['site:127.0.0.1'])
+  assert.ok(hits.length > 0, 'the local site is at its cap')
+  assert.equal(allHitsRelaxable(hits, true), true)
+  assert.ok(fps.length > 0)
+  void last
+})
+
+test('T19: localHosts=allow never fingerprints a local host', () => {
+  const allow = mergeDefaults({ localHosts: 'allow' })
+  const { fps, local } = fingerprints(bash('curl -s http://127.0.0.1:18999/x -o /tmp/o'), allow)
+  assert.equal(local, false, 'an already-exempt call needs no further treatment')
+  assert.ok(!fps.some((fp) => fp.startsWith('net:127.')), `no local net: fingerprint: ${fps}`)
+  assert.ok(!fps.some((fp) => fp.startsWith('site:127.')), 'no local site: fingerprint')
+  assert.ok(fps.some((fp) => fp.startsWith('exact:')), 'the action is still identified')
+  // ...and the guard therefore never blocks the loop.
+  const tracker = createTracker(allow)
+  for (let i = 0; i < 8; i += 1) {
+    const call = bash(`curl -s -o /dev/null http://127.0.0.1:18999/${i}`)
+    assert.deepEqual(run(tracker, call, allow).hits, [])
+  }
+})
+
+test('T20: asking exempts local traffic for the turn, but never the action itself', async () => {
+  const ask = validateCfg(mergeDefaults({ localHosts: 'ask' }))
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, { localHosts: 'ask' })
+  const pre = handlers.get('tools/pre-execute')
+  const noop = async () => ({ kind: 'allow' })
+  const local = (path) => bash(`curl -s -o /dev/null http://127.0.0.1:18999/${path}`)
+
+  // Three local calls fill the site budget without tripping it.
+  // Fill the site budget: CAP-1 calls fit, the cap-th is the one that trips.
+  for (const path of ['a', 'b']) assert.equal(guards[0](local(path)), undefined)
+
+  // The fourth would block on `site:127.0.0.1` — so it is asked about instead.
+  const askable = local('c')
+  const decision = await pre(askable, noop)
+  assert.equal(decision.kind, 'ask')
+  assert.match(decision.reason, /LOCAL address/)
+  assert.match(decision.reason, /REST OF THIS TURN/)
+
+  // Approved: the guard sees the very execution that was asked about.
+  assert.equal(guards[0](askable), undefined, 'an approved ask must not be denied by the guard')
+
+  // The exemption holds for the rest of the turn...
+  for (const path of ['e', 'f', 'g', 'h']) assert.equal(guards[0](local(path)), undefined)
+
+  // ...but a byte-identical repeat is still a loop.
+  assert.equal(guards[0](local('a')), undefined, 'second occurrence is still inside the cap')
+  assert.equal(typeof guards[0](local('a')), 'string', 'the third identical call is denied')
+  void ask
+})
+
+test('T21: a call that is not purely local is never askable', async () => {
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, { localHosts: 'ask' })
+  const pre = handlers.get('tools/pre-execute')
+  const noop = async () => ({ kind: 'allow' })
+
+  // Fill the shared sink with public fetches, then a call that mentions BOTH a
+  // local and a public URL is denied for its sink — and a real repeat must stay
+  // a straight denial, not a prompt.
+  for (let i = 0; i < CAP; i += 1) guards[0](bash(`curl -s https://a.example.com/${i} -o /tmp/shared.bin`))
+  const mixed = bash('curl -s http://127.0.0.1:18999/x https://a.example.com/0 -o /tmp/shared.bin')
+  assert.equal(fingerprints(mixed, cfg).local, false, 'one public url makes the call non-local')
+  const decision = await pre(mixed, noop)
+  assert.equal(decision.kind, 'allow', 'the waterfall falls through to the guard')
+  assert.equal(typeof guards[0](mixed), 'string', 'and the guard denies it outright')
+})
+
+test('T22: a refused ask stops asking and behaves like deny for the rest of the turn', async () => {
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, { localHosts: 'ask' })
+  const pre = handlers.get('tools/pre-execute')
+  const post = handlers.get('tools/post-execute')
+  const noop = async () => ({ kind: 'allow' })
+  const local = (path) => bash(`curl -s -o /dev/null http://127.0.0.1:18999/${path}`)
+
+  for (const path of ['a', 'b']) guards[0](local(path))
+  const denied = local('c')
+  assert.equal((await pre(denied, noop)).kind, 'ask')
+
+  // Rejected: the guard never sees it, but post-execute does.
+  await post(denied, { isError: true, content: [{ type: 'text', text: 'denied by operator' }] }, noop)
+
+  // No further prompts this turn...
+  assert.equal((await pre(local('e'), noop)).kind, 'allow')
+  // ...and the denial explains what happened to the model.
+  const message = guards[0](local('e'))
+  assert.equal(typeof message, 'string')
+  assert.match(message, /declined/)
+
+  // A new human turn clears the refusal.
+  const preStep = handlers.get('agent/pre-step')
+  await preStep({ agent: A, messages: [{ source: { kind: 'user' } }] }, () => undefined)
+  for (const path of ['i', 'j']) guards[0](local(path))
+  assert.equal((await pre(local('l'), noop)).kind, 'ask', 'asking resumes after a human message')
 })

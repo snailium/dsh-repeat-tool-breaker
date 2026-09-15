@@ -141,10 +141,43 @@ denies the call, so dodging one (a new host spelling) still collides on another
 | `exact:<tool>:<json>` | tool name + arguments with decoy fields deleted, keys deep-sorted | A, B |
 | `cmd:<verb>:<command>` | verb + command with volatile flags (`--max-time`, `-s`, `--retry`, `timeout N`, `-sSL` clusters…) removed | C, B |
 | `net:<host><path>` | `http(s)` URL with the scheme defaulted, `www.` and default ports dropped, host aliases folded, query/fragment discarded, trailing slash trimmed | C |
-| `site:<last-2-labels>` | registrable-ish site of each URL (IP literals stand alone) | C, drive-by crawling |
+| `site:<last-2-labels>` | registrable-ish site of each URL (IP literals stand alone) | C, drive-by crawling — see [Local addresses](#local-addresses) |
 | `sink:<path>` | `-o`/`--output`/`-O`/`>`/`>>`/`tee` target of a shell command — except generic destinations (`/dev/null`, `-`, …), which say nothing about *which* resource was fetched | C |
 | `family:http-fetch` | every `curl` / `wget` / `http` / `httpie` / URL-taking tool call | a fetch loop that keeps changing everything else |
 | `verb:<cmd>` | the first non-wrapper command word (`sudo`, `timeout 30`, `FOO=1` are transparent) | tool-swapping within one verb |
+
+### Local addresses
+
+`localhost`, loopback, RFC1918 and link-local hosts are what a development loop
+talks to — a dev server, a local inference endpoint, a container — and a `site:`
+budget cannot tell them apart from a web crawl. `localHosts` decides:
+
+| Value | Behaviour |
+|---|---|
+| `deny` (default) | local calls are counted and blocked like any other host, and the denial names this knob |
+| `ask` | the first local call that would be blocked asks the operator instead — once per turn |
+| `allow` | local traffic is never fingerprinted |
+
+`ask` needs an approval service **and somebody to answer it**, so it belongs in a
+profile with a UI: a headless profile should keep `deny`, where an open question
+would simply stall the turn. That makes this a per-profile decision:
+
+```yaml
+# web profile — be asked once per turn instead of being blocked
+- id: repeat-tool-breaker
+  config:
+    localHosts: ask
+```
+
+What an approval buys: the local **target** fingerprints (`net`, `site`, `sink`,
+`family`, `verb`) stop blocking for the rest of that turn. What it does not buy:
+`exact` and `cmd` are untouched, because a byte-identical repeat is a loop whether
+or not it points at localhost — and a call that mentions even one public URL is
+not a local call at all. Declining an ask stops the asking and behaves like `deny`
+until the next human message.
+
+An ask is only ever made when local traffic is the *only* reason the call would be
+denied, so a real repeat is a straight denial rather than a prompt.
 
 ### Counting rules
 
@@ -185,6 +218,7 @@ at which point `ctx.tools.guard` is the genuine method.
       name: dsh-repeat-tool-breaker
       config:
         window: 12                  # recent calls per agent that participate
+        localHosts: deny            # deny | ask | allow — see "Local addresses"
         previewChars: 400           # truncation for quoted fingerprints
         resultPreviewChars: 800     # truncation for the quoted previous result
         exclude: [todo_write]       # never counted, never resets (*-wildcards ok)
@@ -354,6 +388,9 @@ caught v1 — or that caught v2's own defaults:
   `exact:` fingerprints differ;
 - one failed attempt is asserted to leave room for the identical retry (`T2b`),
   while a call that keeps failing is still blocked;
+- the `localHosts` matrix is asserted end to end (`T17`–`T22`): a mixed call is
+  never askable, an approval exempts targets but not `exact`, and a refusal stops
+  the asking until the next human turn;
 - four *different* URLs writing to `/dev/null` are asserted to all be allowed, and
   a denied call is asserted **not** to spend `net:` budget on the URL it never
   fetched.
