@@ -134,13 +134,14 @@ test('T2: description 1st/2nd/3rd plus a churning timeoutMs cannot launder a rep
   assert.ok(last.hits.length > 0, `the cap-th (${CAP}) decorated call must be denied`)
 })
 
-test('T2b: a failed attempt leaves room to retry the SAME call (why the cap is 3)', () => {
+test('T2b: a failed attempt leaves room to retry the SAME call (why the cap is 5)', () => {
   // The reference deployment: an `edit` failed at the tool layer — the harness
   // requires a read first, a precondition and not a loop — and the correct
   // response was to satisfy it and retry the identical call. At a cap of 2 that
   // retry is the very call that gets blocked, and the only way forward is to
   // cosmetically change the arguments, which is the behaviour this plugin exists
-  // to stop. At 3 the retry fits, and a call that keeps failing still stops.
+  // to stop. At 5 the retry fits with room to spare, and a call that keeps
+  // failing is still stopped on its fifth attempt.
   const tracker = createTracker(cfg)
   const edit = {
     name: 'edit',
@@ -149,6 +150,9 @@ test('T2b: a failed attempt leaves room to retry the SAME call (why the cap is 3
   }
   assert.deepEqual(run(tracker, edit).hits, [], 'attempt 1 is allowed (and fails)')
   assert.deepEqual(run(tracker, edit).hits, [], 'the retry of the identical call must be allowed')
+  for (let i = 2; i < CAP - 1; i += 1) {
+    assert.deepEqual(run(tracker, edit).hits, [], `attempt ${i + 1} is still inside the cap`)
+  }
   assert.ok(run(tracker, edit).hits.length > 0, 'a call that keeps failing is still blocked')
 })
 
@@ -526,10 +530,10 @@ test('T13c: hasUserMessage only trusts the human source', () => {
 test('T14: shipped defaults are the v2 table', () => {
   assert.equal(DEFAULTS.window, 12)
   assert.deepEqual(DEFAULTS.limits, {
-    exact: 3,
-    cmd: 3,
-    net: 3,
-    sink: 3,
+    exact: 5,
+    cmd: 5,
+    net: 5,
+    sink: 5,
     site: null,
     'family:http-fetch': null,
     'verb:curl': null,
@@ -566,8 +570,11 @@ test('T14c: paginating one endpoint is progress, not a repeat', () => {
   for (let n = 1; n <= 8; n += 1) {
     assert.deepEqual(run(tracker, page(n)).hits, [], `page ${n} must be allowed`)
   }
-  // The same page twice in a row is still inside the cap; the cap-th is denied.
-  assert.deepEqual(run(tracker, page(8)).hits, [])
+  // Page 8 has already been fetched once above; further fetches of it still fit
+  // until the cap-th, which is denied. The window holds them all (8 pages + CAP).
+  for (let i = 1; i < CAP - 1; i += 1) {
+    assert.deepEqual(run(tracker, page(8)).hits, [], `repeat ${i} of page 8 is inside the cap`)
+  }
   assert.ok(run(tracker, page(8)).hits.length > 0, 're-fetching ONE page is a loop')
 })
 
@@ -609,9 +616,10 @@ test('T17b: a call is local only when EVERY url it mentions is local', () => {
 test('T18: localHosts=deny blocks the cap-th local call and names the knob', () => {
   const { ctx, guards } = fakeCtx()
   apply(ctx, { localHosts: 'deny' })
-  assert.equal(guards[0](localCall('p', 0)), undefined)
-  assert.equal(guards[0](localCall('p', 1)), undefined)
-  const message = guards[0](localCall('p', 2))
+  for (let i = 0; i < CAP - 1; i += 1) {
+    assert.equal(guards[0](localCall('p', i)), undefined, `local call ${i + 1} is inside the cap`)
+  }
+  const message = guards[0](localCall('p', CAP - 1))
   assert.equal(typeof message, 'string')
   assert.match(message, /LOCAL address/)
   assert.match(message, /localHosts: deny/)
@@ -637,12 +645,13 @@ test('T20: asking exempts local traffic for the turn, but never the action itsel
   const pre = handlers.get('tools/pre-execute')
   const noop = async () => ({ kind: 'allow' })
 
-  assert.equal(guards[0](localCall('p', 0)), undefined)
-  assert.equal(guards[0](localCall('p', 1)), undefined)
+  for (let i = 0; i < CAP - 1; i += 1) {
+    assert.equal(guards[0](localCall('p', i)), undefined, `local call ${i + 1} is inside the cap`)
+  }
 
-  // The third fetch of the same local resource would block on `net:` — so it is
+  // The cap-th fetch of the same local resource would block on `net:` — so it is
   // asked about instead.
-  const askable = localCall('p', 2)
+  const askable = localCall('p', CAP - 1)
   const decision = await pre(askable, noop)
   assert.equal(decision.kind, 'ask')
   assert.match(decision.reason, /LOCAL address/)
@@ -650,13 +659,16 @@ test('T20: asking exempts local traffic for the turn, but never the action itsel
 
   // Approved: the guard sees the very execution that was asked about.
   assert.equal(guards[0](askable), undefined, 'an approved ask must not be denied by the guard')
-  for (let i = 3; i < 8; i += 1) {
+  for (let i = CAP; i < CAP + 6; i += 1) {
     assert.equal(guards[0](localCall('p', i)), undefined, `local call ${i + 1} rides along`)
   }
 
-  // ...but the action itself is never exempt: `exact` is not relaxable.
-  assert.equal(guards[0](localCall('p', 0)), undefined, 'a second occurrence is inside the cap')
-  assert.equal(typeof guards[0](localCall('p', 0)), 'string', 'the cap-th identical call is denied')
+  // ...but the action itself is never exempt: `exact` is not relaxable. This uses
+  // a variant no earlier call used, so the byte-identical count starts clean.
+  for (let n = 1; n < CAP; n += 1) {
+    assert.equal(guards[0](localCall('p', 99)), undefined, `identical call ${n} is inside the cap`)
+  }
+  assert.equal(typeof guards[0](localCall('p', 99)), 'string', 'the cap-th identical call is denied')
 })
 
 test('T21: a call that is not purely local is never askable', async () => {
@@ -683,9 +695,8 @@ test('T22: a refused ask stops asking and behaves like deny for the rest of the 
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
 
-  guards[0](localCall('p', 0))
-  guards[0](localCall('p', 1))
-  const denied = localCall('p', 2)
+  for (let i = 0; i < CAP - 1; i += 1) guards[0](localCall('p', i))
+  const denied = localCall('p', CAP - 1)
   assert.equal((await pre(denied, noop)).kind, 'ask')
 
   // Rejected: the guard never sees it, but post-execute does.
@@ -701,9 +712,12 @@ test('T22: a refused ask stops asking and behaves like deny for the rest of the 
   // A new human turn clears the refusal.
   const preStep = handlers.get('agent/pre-step')
   await preStep({ agent: A, messages: [{ source: { kind: 'user' } }] }, () => undefined)
-  guards[0](localCall('q', 0))
-  guards[0](localCall('q', 1))
-  assert.equal((await pre(localCall('q', 2), noop)).kind, 'ask', 'asking resumes after a human message')
+  for (let i = 0; i < CAP - 1; i += 1) guards[0](localCall('q', i))
+  assert.equal(
+    (await pre(localCall('q', CAP - 1), noop)).kind,
+    'ask',
+    'asking resumes after a human message',
+  )
 })
 
 test('T23: a human turn re-arms the local policy and the window', async () => {
@@ -715,9 +729,8 @@ test('T23: a human turn re-arms the local policy and the window', async () => {
   const pre = handlers.get('tools/pre-execute')
   const noop = async () => ({ kind: 'allow' })
 
-  guards[0](localCall('p', 0))
-  guards[0](localCall('p', 1))
-  const asked = localCall('p', 2)
+  for (let i = 0; i < CAP - 1; i += 1) guards[0](localCall('p', i))
+  const asked = localCall('p', CAP - 1)
   assert.equal((await pre(asked, noop)).kind, 'ask')
   assert.equal(guards[0](asked), undefined, 'approved -> exempt for this turn')
   assert.equal(guards[0](localCall('p', 3)), undefined, 'and every later local call rides along')
@@ -725,10 +738,11 @@ test('T23: a human turn re-arms the local policy and the window', async () => {
   const preStep = handlers.get('agent/pre-step')
   await preStep({ agent: A, messages: [{ source: { kind: 'user' } }] }, () => undefined)
 
-  assert.equal(guards[0](localCall('q', 0)), undefined, 'the new turn starts from an empty budget')
-  assert.equal(guards[0](localCall('q', 1)), undefined, 'and a clean exemption')
+  for (let i = 0; i < CAP - 1; i += 1) {
+    assert.equal(guards[0](localCall('q', i)), undefined, `the new turn's local call ${i + 1} fits`)
+  }
   assert.equal(
-    (await pre(localCall('q', 2), noop)).kind,
+    (await pre(localCall('q', CAP - 1), noop)).kind,
     'ask',
     'the cap-th local call of the new turn asks again instead of sailing through',
   )

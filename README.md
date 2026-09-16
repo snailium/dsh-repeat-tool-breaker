@@ -29,13 +29,13 @@ In one paragraph, the v1 → v2 story:
 
 | | Loop | Caught by |
 |---|---|---|
-| **A** | the same `read`/`write`/`bash` arguments again, verbatim | `exact:` (3) |
-| **B** | `description: '1st'/'2nd'/'3rd'`, `command` unchanged | decoy arguments are stripped **before** fingerprinting, so the calls become byte-identical → `exact:` (3) |
-| **C** | `curl --max-time 60 open-data.canada.ca` ↔ `curl --max-time 30 open.canada.ca` | `net:` (3) after host-alias folding, plus `sink:` (3) and `cmd:` (3) after volatile-flag stripping |
+| **A** | the same `read`/`write`/`bash` arguments again, verbatim | `exact:` (5) |
+| **B** | `description: '1st'/'2nd'/'3rd'`, `command` unchanged | decoy arguments are stripped **before** fingerprinting, so the calls become byte-identical → `exact:` (5) |
+| **C** | `curl --max-time 60 open-data.canada.ca` ↔ `curl --max-time 30 open.canada.ca` | `net:` (5) after host-alias folding, plus `sink:` (5) and `cmd:` (5) after volatile-flag stripping |
 
 The sibling official plugin `@deepseek-ai/dsh-repeat-tool-reminder` (advisory, at
-3/5/8 repeats) may stay on — this breaker refuses earlier, so the two compose:
-the breaker is the hard gate, the reminder is the soft nudge.
+3/5/8 repeats) may stay on — the two compose, with the reminder as the soft nudge
+and this breaker as the hard gate at 5.
 
 ## Requirements
 
@@ -239,10 +239,10 @@ at which point `ctx.tools.guard` is the genuine method.
         hostAliases:                # merged over the defaults
           open-data.canada.ca: open.canada.ca
         limits:                     # merged over the defaults; null = uncapped
-          exact: 3
-          cmd: 3
-          net: 3
-          sink: 3
+          exact: 5
+          cmd: 5
+          net: 5
+          sink: 5
           site: null                # volume budgets: off by default, see "Tuning"
           'family:http-fetch': null
           'verb:curl': null
@@ -275,15 +275,20 @@ that isn't yet in the composed tree.)
 
 The table mixes *precise* caps with *broad* ones, and the difference matters:
 
-- **precise, resource-scoped, cap 3**: `exact`, `cmd`, `net`, `sink`. These fire
+- **precise, resource-scoped, cap 5**: `exact`, `cmd`, `net`, `sink`. These fire
   only when the same action actually happens again, and they are what catches
-  loops. They are 3 rather than 2 because a cap of 2 leaves no room for the most
-  common *non-loop* repeat: the first attempt fails for a reason that has nothing
-  to do with looping — a precondition the harness enforces, a DNS failure — and
-  the correct response is to retry the same call. At 2 that retry is what gets
-  blocked, and the only way forward is to cosmetically change the call, which is
-  exactly what this plugin exists to stop. At 3 the retry fits, while a call that
-  keeps failing is still stopped on its third attempt.
+  loops. Every lower value was tried against real work and each produced a false
+  positive. A cap of 2 leaves no room for the most common *non-loop* repeat: the
+  first attempt fails for a reason that has nothing to do with looping — a
+  precondition the harness enforces, a DNS failure — and the correct response is
+  to retry the same call; at 2 that retry is what gets blocked, and the only way
+  forward is to cosmetically change the call, which is exactly what this plugin
+  exists to stop. At 3 the retry fits, but dense legitimate work still tripped,
+  because `sink:` is path-only **by design** — its whole job is to catch one
+  destination rewritten with ever-changing content — so a shell cycle that writes
+  the same file several times while iterating looked exactly like a loop. At 5 an
+  ordinary edit/test cycle fits, and a call that keeps failing is still stopped on
+  its fifth attempt.
 - **not counter-based at all**: file operations. There is no `readpath` or
   `writepath` limit. A file action is identified by its **position** through
   `exact:` — the same file at the same offset, or the same replacement string, is

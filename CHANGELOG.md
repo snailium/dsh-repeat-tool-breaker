@@ -5,6 +5,36 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-15
+
+### Changed
+
+- **The action-identity caps are 5, not 3** — `exact`, `cmd`, `net` and `sink`.
+  3 fixed the retry case that 2 broke, but it still tripped on *dense legitimate
+  work*. The clearest instance was `sink:`: it is path-only **by design** — its
+  whole job is to catch one destination being rewritten with ever-changing
+  content — so a shell cycle that writes the same file several times while
+  iterating is indistinguishable from a loop at 3. On the reference deployment a
+  session building and re-running scaffolding was denied on its third write to the
+  same path with three *different* payloads.
+
+  Raising the cap is the right lever here rather than making `sink:`
+  content-sensitive: a content hash would make it fire only on a byte-identical
+  rewrite, which `exact:` already catches, and would therefore remove the one
+  thing `sink:` exists to do. At 5 an ordinary edit/test cycle fits, and a real
+  loop is still stopped — it reaches the cap because it never changes what it is
+  doing.
+
+  Net effect: two extra attempts per action before the hard break. The suite is
+  expressed in terms of the cap (`const CAP = cfg.limits.exact`); six tests that
+  had hard-coded the 3-call shape now derive it from `CAP` instead.
+
+### Notes
+
+- The gate is unchanged in kind and still **fail-closed**: an action repeated five
+  times inside a 12-call window is denied exactly as before, and every unattended
+  `localHosts: ask` outcome is still a denial.
+
 ## [0.3.2] - 2026-09-15
 
 ### Fixed
@@ -340,7 +370,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.2.4...v0.3.0
