@@ -20,7 +20,8 @@
 #   DSH_PREFIX=$DSH_PREFIX ./test/compat/run-compat.sh
 #
 # Environment:
-#   DSH_PREFIX   npm prefix holding node_modules/@deepseek-ai/dsh (default: /home/gwang/.rtb-compat)
+#   DSH_PREFIX   npm prefix holding node_modules/@deepseek-ai/dsh
+#                (default: .rtb-compat beside this repo)
 #   DSH_BIN      dsh executable (default: $DSH_PREFIX/node_modules/.bin/dsh)
 #   COMPAT_HOME  throwaway DSH_HOME (default: $DSH_PREFIX/home)
 #   MOCK_PORT    port for the mock model (default: 18999)
@@ -32,7 +33,10 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 PLUGIN_DIR=$(cd "$HERE/../.." && pwd)
-DSH_PREFIX=${DSH_PREFIX:-/home/gwang/.rtb-compat}
+# The dsh-under-test install lives in a throwaway prefix BESIDE this repo, so a
+# ~300 MB node_modules tree never lands inside the working tree and `git status`
+# stays clean. Point DSH_PREFIX somewhere else to reuse or replace it.
+DSH_PREFIX=${DSH_PREFIX:-$(cd "$PLUGIN_DIR/.." && pwd)/.rtb-compat}
 DSH_BIN=${DSH_BIN:-$DSH_PREFIX/node_modules/.bin/dsh}
 COMPAT_HOME=${COMPAT_HOME:-$DSH_PREFIX/home}
 MOCK_PORT=${MOCK_PORT:-18999}
