@@ -21,7 +21,7 @@ import {
   tokenize,
 } from '../lib/normalize.js'
 import {
-  allHitsRelaxable,
+  blockingHits,
   exactFingerprint,
   fingerprints,
   isGenericSink,
@@ -29,7 +29,7 @@ import {
   limitFor,
 } from '../lib/fingerprints.js'
 import { createTracker, hasUserMessage } from '../lib/window.js'
-import { denyMessage, renderResult } from '../lib/message.js'
+import { askMessage, denyMessage, renderResult, summarizeMessage, warnMessage } from '../lib/message.js'
 import { apply, name as PLUGIN_NAME } from '../index.js'
 
 const cfg = validateCfg(mergeDefaults({}))
@@ -527,26 +527,61 @@ test('T13c: hasUserMessage only trusts the human source', () => {
 // T14 — documented shape of the shipped defaults
 // ---------------------------------------------------------------------------
 
-test('T14: shipped defaults are the v2 table', () => {
-  assert.equal(DEFAULTS.window, 12)
+test('T14: shipped defaults are the 0.4.0 table', () => {
+  assert.equal(DEFAULTS.window, 16)
   assert.deepEqual(DEFAULTS.limits, {
-    exact: 5,
-    cmd: 5,
-    net: 5,
-    sink: 5,
+    exact: 9,
+    cmd: 9,
+    net: 9,
+    sink: 9,
+    host: 9,
     site: null,
     'family:http-fetch': null,
     'verb:curl': null,
     'verb:wget': null,
   })
-  // `ask` is the default because it is fail-closed: every unattended approval
-  // outcome is a denial, so this degrades to `deny` where nobody can answer.
-  assert.equal(DEFAULTS.localHosts, 'ask', 'the default must work without a hand-written patch')
+  // The gate asks by default because asking is FAIL-CLOSED: every unattended
+  // approval outcome is a denial, so a headless profile denies by itself and
+  // nobody has to write a patch to get the prompt on a profile with a UI.
+  assert.equal(DEFAULTS.onLimit, 'ask', 'the gate must work without a hand-written patch')
+  // Asking is no longer a local-only concern, so `localHosts` no longer has `ask`.
+  assert.equal(DEFAULTS.localHosts, 'deny')
+  assert.equal(DEFAULTS.warnAt, 3)
+  assert.equal(DEFAULTS.summarizeAt, 6)
+  assert.equal(DEFAULTS.includeLocal, false)
   assert.deepEqual(DEFAULTS.exclude, ['todo_write'])
   // Removed in 0.2.4: the key only ever fed the path-only file fingerprints, which
   // 0.2.2 deleted. A config that still lists it is accepted and inert.
   assert.ok(!('pathAliases' in DEFAULTS), 'pathAliases must not come back as dead config')
   assert.equal(limitFor('writepath:/w', cfg.limits), Number.POSITIVE_INFINITY)
+})
+
+test('T14d: a stage is disabled by 0, a negative number, or null — not an error', () => {
+  for (const value of [0, -1, null]) {
+    const off = validateCfg(mergeDefaults({ warnAt: value, summarizeAt: value }))
+    assert.equal(off.warnAt, null, `warnAt ${String(value)} must disable the stage silently`)
+    assert.equal(off.summarizeAt, null)
+  }
+  assert.equal(validateCfg(mergeDefaults({ warnAt: 4 })).warnAt, 4, 'a positive integer survives')
+  assert.throws(() => validateCfg(mergeDefaults({ warnAt: 'soon' })), /must be a number/)
+})
+
+test('T14e: no setting is compared with another', () => {
+  // Inverted stages are legal: the stronger message simply fires first.
+  const inverted = validateCfg(mergeDefaults({ warnAt: 9, summarizeAt: 3 }))
+  assert.equal(inverted.warnAt, 9)
+  assert.equal(inverted.summarizeAt, 3)
+  // A limits entry below a stage is legal too — it says "no escalation for this
+  // measure", which is a deliberate choice rather than a mistake to catch.
+  const low = validateCfg(mergeDefaults({ warnAt: 3, summarizeAt: 6, limits: { exact: 2 } }))
+  assert.equal(low.limits.exact, 2)
+})
+
+test('T14f: `localHosts: ask` fails loud and points at onLimit', () => {
+  assert.throws(
+    () => validateCfg(mergeDefaults({ localHosts: 'ask' })),
+    /localHosts: ask[\s\S]*removed in 0\.4\.0[\s\S]*onLimit: ask/,
+  )
 })
 
 test('T14b: DOCUMENTED BEHAVIOR — volume is not a loop signal, so a batch always survives', () => {
@@ -564,26 +599,45 @@ test('T14b: DOCUMENTED BEHAVIOR — volume is not a loop signal, so a batch alwa
   assert.ok(run(tracker, repeat).hits.length > 0, 'repeating one resource is still a loop')
 })
 
-test('T14c: paginating one endpoint is progress, not a repeat', () => {
+test('T14c: pagination — net: stays distinct, host: is the convergence measure', () => {
   const tracker = createTracker(cfg)
   const page = (n) => bash(`curl -sL "https://api.github.com/repos/o/r/commits?per_page=100&page=${n}"`)
   for (let n = 1; n <= 8; n += 1) {
-    assert.deepEqual(run(tracker, page(n)).hits, [], `page ${n} must be allowed`)
+    const { hits, fps } = run(tracker, page(n))
+    assert.deepEqual(hits, [], `page ${n} must be allowed`)
+    assert.equal(fps.filter((fp) => fp.startsWith('net:')).length, 1, 'one net: fingerprint per call')
   }
-  // Page 8 has already been fetched once above; further fetches of it still fit
-  // until the cap-th, which is denied. The window holds them all (8 pages + CAP).
-  for (let i = 1; i < CAP - 1; i += 1) {
-    assert.deepEqual(run(tracker, page(8)).hits, [], `repeat ${i} of page 8 is inside the cap`)
-  }
-  assert.ok(run(tracker, page(8)).hits.length > 0, 're-fetching ONE page is a loop')
+
+  // Eight DISTINCT pages never collide on `net:` — the 0.3.2 guarantee, and it still
+  // holds: the query is part of the fingerprint, so `?page=2` is a different
+  // resource from `?page=1`.
+  //
+  // They are, however, eight requests to ONE host, so `host:` has reached 8 and the
+  // next call to that host is the cap-th. That is the DESIGN, not a leftover of 0.3.2:
+  // `net:` stops punishing pagination, and `host:` bounds how many requests one target
+  // receives — with stage 1 at 3 and stage 2 at 6 underneath, where a paging model is
+  // told to use a larger per-batch amount instead of walking many small ones. A model
+  // that takes that advice finishes well under the gate; one that ignores it is exactly
+  // what the gate is for. The advice is deliberately backend-agnostic — the same shape
+  // appears when an agent reads a file line by line.
+  const ninth = run(tracker, page(9))
+  assert.ok(
+    ninth.hits.some((entry) => entry.fp === 'host:api.github.com'),
+    `expected host: to accumulate across pages, got ${JSON.stringify(ninth.hits)}`,
+  )
+  assert.ok(
+    !ninth.hits.some((entry) => entry.fp.startsWith('net:')),
+    'and net: must NOT be what blocks: every page is a different resource',
+  )
 })
 
 // ---------------------------------------------------------------------------
-// T17+ — local-address policy (`localHosts`)
+// T17+ — local addresses, and the gate (`onLimit`)
 //
-// A local call is one that mentions at least one URL and every URL it mentions is
-// local. With the volume caps off, a LOCAL loop only accumulates when it hits the
-// SAME host+path — so these helpers vary the command, not the target.
+// A call is LOCAL when it mentions at least one URL and every URL it mentions is
+// local. Since 0.4.0 locality only decides whether target fingerprints are
+// emitted at all (`localHosts: allow`) and whether the `host:` measure applies
+// (`includeLocal`); asking the operator is no longer a local concern.
 // ---------------------------------------------------------------------------
 
 /** A call to one local path whose COMMAND differs per variant (so `net:` is what accumulates). */
@@ -613,16 +667,33 @@ test('T17b: a call is local only when EVERY url it mentions is local', () => {
   assert.equal(fingerprints(bash('ls -la'), cfg).local, false, 'a call with no url is not a local call')
 })
 
-test('T18: localHosts=deny blocks the cap-th local call and names the knob', () => {
+test('T25: the host: measure — public hosts yes, local hosts no by default', () => {
+  const pub = fingerprints(bash('curl -s "https://api.weather.gc.ca/v1/x?STN_ID=1"'), cfg)
+  assert.ok(pub.fps.includes('host:api.weather.gc.ca'), `expected a host: measure, got ${pub.fps}`)
+  assert.ok(pub.fps.includes('site:gc.ca'), 'site: still collapses to the last two labels')
+  // The host is what distinguishes targets: two different paths on one host share
+  // the measure, which is exactly the convergence signal.
+  const pub2 = fingerprints(bash('curl -s "https://api.weather.gc.ca/v1/y?STN_ID=2"'), cfg)
+  assert.ok(pub2.fps.includes('host:api.weather.gc.ca'))
+  assert.ok(!pub2.fps.some((fp) => pub.fps.includes(fp) && fp.startsWith('net:')), 'net: differs by query')
+
+  const loc = fingerprints(bash('curl -s http://127.0.0.1:18999/p'), cfg)
+  assert.ok(!loc.fps.some((fp) => fp.startsWith('host:')), 'local hosts are excluded by default')
+
+  const withLocal = validateCfg(mergeDefaults({ includeLocal: true }))
+  const loc2 = fingerprints(bash('curl -s http://127.0.0.1:18999/p'), withLocal)
+  assert.ok(loc2.fps.includes('host:127.0.0.1'), 'includeLocal opts them back in')
+})
+
+test('T18: localHosts=deny counts and blocks local calls like any other', () => {
   const { ctx, guards } = fakeCtx()
-  apply(ctx, { localHosts: 'deny' })
+  apply(ctx, { onLimit: 'deny', localHosts: 'deny' })
   for (let i = 0; i < CAP - 1; i += 1) {
     assert.equal(guards[0](localCall('p', i)), undefined, `local call ${i + 1} is inside the cap`)
   }
   const message = guards[0](localCall('p', CAP - 1))
   assert.equal(typeof message, 'string')
-  assert.match(message, /LOCAL address/)
-  assert.match(message, /localHosts: deny/)
+  assert.match(message, /REPEAT_TOOL_BLOCKED/)
 })
 
 test('T19: localHosts=allow never fingerprints a local host', () => {
@@ -631,66 +702,129 @@ test('T19: localHosts=allow never fingerprints a local host', () => {
   assert.equal(local, false, 'an already-exempt call needs no further treatment')
   assert.ok(!fps.some((fp) => fp.startsWith('net:127.')), `no local net: fingerprint: ${fps}`)
   assert.ok(!fps.some((fp) => fp.startsWith('site:127.')), 'no local site: fingerprint')
+  assert.ok(!fps.some((fp) => fp.startsWith('host:127.')), 'no local host: fingerprint')
   assert.ok(fps.some((fp) => fp.startsWith('exact:')), 'the action is still identified')
-  // ...and the guard therefore never blocks the loop.
   const tracker = createTracker(allow)
-  for (let i = 0; i < 8; i += 1) {
+  for (let i = 0; i < 12; i += 1) {
     assert.deepEqual(run(tracker, localCall('p', i), allow).hits, [], `local call ${i + 1} must be allowed`)
   }
 })
 
-test('T20: asking exempts local traffic for the turn, but never the action itself', async () => {
+test('T26: an exemption covers only the measures that hit', () => {
+  const offending = [{ fp: 'host:a.example.com', next: 9, cap: 9 }]
+  assert.deepEqual(blockingHits(offending, new Set(['host:a.example.com'])), [], 'the exempted measure passes')
+  assert.deepEqual(
+    blockingHits(offending, new Set(['host:b.example.com'])),
+    offending,
+    'a different measure is untouched by that exemption',
+  )
+  assert.deepEqual(blockingHits(offending, new Set()), offending, 'no exemption blocks everything')
+})
+
+test('T24: the three stages fire at 3, 6 and 9 on one measure', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { localHosts: 'ask' })
+  // onLimit: deny isolates the two advisory stages from the gate.
+  apply(ctx, { onLimit: 'deny' })
+  const post = handlers.get('tools/post-execute')
+  const noop = async () => ({ kind: 'allow' })
+  const call = () => bash('curl -s "https://api.example.com/v1/items?page=1"')
+  const observed = []
+
+  for (let i = 1; i <= CAP; i += 1) {
+    const exec = call()
+    const denial = guards[0](exec)
+    const decision = await post(exec, { content: [{ type: 'text', text: 'ok' }] }, noop)
+    const advisory = (decision?.additionalContexts ?? [])
+      .filter((message) => message.source?.kind === 'plugin')
+      .map((message) => message.content[0].text)
+      .join('\n')
+    observed.push({ i, denied: typeof denial === 'string', denial, advisory })
+  }
+  const at = (n) => observed[n - 1]
+
+  assert.equal(at(1).advisory, '', 'nothing on the first call')
+  assert.equal(at(2).advisory, '')
+  assert.match(at(3).advisory, /^CONVERGENCE_CHECK: you are repeating yourself/, 'stage 1 at 3')
+  assert.equal(at(4).advisory, '', 'the stage fires once per crossing, not on every later call')
+  assert.equal(at(5).advisory, '')
+  assert.match(at(6).advisory, /summarise your progress/, 'stage 2 at 6')
+  assert.match(at(6).advisory, /larger per-batch amount/, 'and it names the batching lever')
+  assert.doesNotMatch(
+    at(6).advisory,
+    /paging|per_page|page size/i,
+    'the advice must stay backend-agnostic: the same failure shows up reading a file line by line',
+  )
+  assert.equal(at(7).advisory, '')
+  assert.equal(at(8).advisory, '')
+  assert.equal(at(9).denied, true, 'the cap-th call is the gate')
+  assert.match(at(9).denial, /REPEAT_TOOL_BLOCKED/)
+  assert.doesNotMatch(at(9).denial, /budget/i, 'no invented budget figure')
+  // No advisory message may look like a tool-call template.
+  for (const entry of observed) {
+    assert.doesNotMatch(entry.advisory, /<tool_call>|<function=/, 'no template-looking text')
+  }
+})
+
+test('T27: a disabled stage is simply never delivered', async () => {
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, { onLimit: 'deny', warnAt: 0, summarizeAt: null })
+  const post = handlers.get('tools/post-execute')
+  const noop = async () => ({ kind: 'allow' })
+  const call = () => bash('curl -s "https://api.example.com/v1/items?page=1"')
+  for (let i = 1; i < CAP; i += 1) {
+    const exec = call()
+    guards[0](exec)
+    const decision = await post(exec, { content: [] }, noop)
+    assert.equal(decision?.additionalContexts, undefined, `no advisory on call ${i}`)
+  }
+})
+
+test('T20: the gate asks, and approving stops counting that measure for the turn', async () => {
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, { onLimit: 'ask' })
   const pre = handlers.get('tools/pre-execute')
   const noop = async () => ({ kind: 'allow' })
 
-  for (let i = 0; i < CAP - 1; i += 1) {
-    assert.equal(guards[0](localCall('p', i)), undefined, `local call ${i + 1} is inside the cap`)
-  }
+  for (let i = 0; i < CAP - 1; i += 1) guards[0](localCall('p', i))
 
   // The cap-th fetch of the same local resource would block on `net:` — so it is
   // asked about instead.
   const askable = localCall('p', CAP - 1)
   const decision = await pre(askable, noop)
   assert.equal(decision.kind, 'ask')
-  assert.match(decision.reason, /LOCAL address/)
+  assert.match(decision.reason, /about to be blocked as a repeat/)
   assert.match(decision.reason, /REST OF THIS TURN/)
 
   // Approved: the guard sees the very execution that was asked about.
   assert.equal(guards[0](askable), undefined, 'an approved ask must not be denied by the guard')
-  for (let i = CAP; i < CAP + 6; i += 1) {
+
+  // The measure that hit is exempt AND no longer counted, so later identical ones
+  // ride along without ever reaching a stage again.
+  for (let i = CAP; i < CAP + 12; i += 1) {
     assert.equal(guards[0](localCall('p', i)), undefined, `local call ${i + 1} rides along`)
   }
-
-  // ...but the action itself is never exempt: `exact` is not relaxable. This uses
-  // a variant no earlier call used, so the byte-identical count starts clean.
-  for (let n = 1; n < CAP; n += 1) {
-    assert.equal(guards[0](localCall('p', 99)), undefined, `identical call ${n} is inside the cap`)
-  }
-  assert.equal(typeof guards[0](localCall('p', 99)), 'string', 'the cap-th identical call is denied')
 })
 
-test('T21: a call that is not purely local is never askable', async () => {
+test('T21: the gate is not local-only — any measure can be asked about', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { localHosts: 'ask' })
+  apply(ctx, { onLimit: 'ask' })
   const pre = handlers.get('tools/pre-execute')
   const noop = async () => ({ kind: 'allow' })
 
-  // Fill the shared sink with public fetches, then a call that mentions BOTH a
-  // local and a public URL is denied for its sink — and a real repeat must stay
-  // a straight denial, not a prompt.
-  for (let i = 0; i < CAP; i += 1) guards[0](bash(`curl -s https://a.example.com/${i} -o /tmp/shared.bin`))
+  // Fill a shared sink and one public host with DIFFERENT urls, then gate on it.
+  for (let i = 0; i < CAP - 1; i += 1) {
+    guards[0](bash(`curl -s https://a.example.com/${i} -o /tmp/shared.bin`))
+  }
   const mixed = bash('curl -s http://127.0.0.1:18999/x https://a.example.com/0 -o /tmp/shared.bin')
   assert.equal(fingerprints(mixed, cfg).local, false, 'one public url makes the call non-local')
   const decision = await pre(mixed, noop)
-  assert.equal(decision.kind, 'allow', 'the waterfall falls through to the guard')
-  assert.equal(typeof guards[0](mixed), 'string', 'and the guard denies it outright')
+  assert.equal(decision.kind, 'ask', 'asking is no longer restricted to local targets')
+  assert.match(decision.reason, /sink:\/tmp\/shared\.bin/)
 })
 
-test('T22: a refused ask stops asking and behaves like deny for the rest of the turn', async () => {
+test('T22: a declined ask stops asking and denies that measure for the turn', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { localHosts: 'ask' })
+  apply(ctx, { onLimit: 'ask' })
   const pre = handlers.get('tools/pre-execute')
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
@@ -707,7 +841,7 @@ test('T22: a refused ask stops asking and behaves like deny for the rest of the 
   // ...and the denial explains what happened to the model.
   const message = guards[0](localCall('p', 3))
   assert.equal(typeof message, 'string')
-  assert.match(message, /was NOT exempted/)
+  assert.match(message, /was NOT granted/)
 
   // A new human turn clears the refusal.
   const preStep = handlers.get('agent/pre-step')
@@ -720,12 +854,9 @@ test('T22: a refused ask stops asking and behaves like deny for the rest of the 
   )
 })
 
-test('T23: a human turn re-arms the local policy and the window', async () => {
-  // The exemption is scoped to the turn BY DESIGN: approving once must not
-  // disable the breaker for local traffic forever. `reset` (a user message)
-  // drops the whole slot, so both the budget and the ask come back.
+test('T23: a human turn clears the exemption and the window', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { localHosts: 'ask' })
+  apply(ctx, { onLimit: 'ask' })
   const pre = handlers.get('tools/pre-execute')
   const noop = async () => ({ kind: 'allow' })
 
@@ -733,7 +864,7 @@ test('T23: a human turn re-arms the local policy and the window', async () => {
   const asked = localCall('p', CAP - 1)
   assert.equal((await pre(asked, noop)).kind, 'ask')
   assert.equal(guards[0](asked), undefined, 'approved -> exempt for this turn')
-  assert.equal(guards[0](localCall('p', 3)), undefined, 'and every later local call rides along')
+  assert.equal(guards[0](localCall('p', 3)), undefined, 'and later calls to that measure ride along')
 
   const preStep = handlers.get('agent/pre-step')
   await preStep({ agent: A, messages: [{ source: { kind: 'user' } }] }, () => undefined)

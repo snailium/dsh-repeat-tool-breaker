@@ -1,10 +1,10 @@
 /**
- * dsh-repeat-tool-breaker v2 — hard break on repeated tool calls.
+ * dsh-repeat-tool-breaker — repeat detection with escalation, not just a wall.
  *
- * A local, dependency-free DSH plugin (pure ESM, no schemastery/cordis
- * imports). It registers ONE synchronous monotonic gate through the public
- * `ctx.tools.guard` API, which runs after every `tools/pre-execute` listener
- * and before the tool body:
+ * A local, dependency-free DSH plugin (pure ESM, no schemastery/cordis imports).
+ * It registers ONE synchronous monotonic gate through the public
+ * `ctx.tools.guard` API, which runs after every `tools/pre-execute` listener and
+ * before the tool body:
  *
  *   ToolGuard = (execution) => string | undefined
  *   - a string => FINAL denial; the body never runs and the model receives an
@@ -12,43 +12,46 @@
  *   - undefined => leave the call allowed (a guard can never flip a denial back
  *     to allowed by ordering).
  *
- * WHY v2 EXISTS — three loops v1 could not see:
+ * ## Three escalating stages
  *
- *   A. byte-identical repeat                    -> v1 caught this.
- *   B. `description: '1st'|'2nd'|'3rd'` plus a churning `timeoutMs` made every
- *      call textually NEW, so the exact-argument counter never advanced.
- *   C. `curl --max-time 60 open-data.canada.ca` vs `curl --max-time 30
- *      open.canada.ca` alternated forever, because v1 counted only
- *      CONSECUTIVE identical calls and never normalized the command.
+ * Repeating a MEASURE (a fingerprint identity — `exact:`, `cmd:`, `net:`,
+ * `host:`, `sink:`, …) inside the same human turn escalates:
  *
- * v2 answers with:
+ *   1. `warnAt` (3)      — a light advisory: you are repeating; consider another route
+ *   2. `summarizeAt` (6) — a demand: summarise progress; list untried alternatives
+ *   3. `limits` (9)      — the gate: ask the operator (`onLimit: ask`) or deny
  *
- *   - `ignoreArgs`: decoy/presentation arguments are deleted BEFORE any
- *     fingerprint string is built, so they cannot launder a repeat (B).
- *   - a per-agent sliding WINDOW plus semantic fingerprints — `net:` (host +
- *     path, alias-folded, query stripped), `site:`, `sink:` (where the bytes
- *     are written), `cmd:` (verb + command with volatile flags removed),
- *     `family:`/`verb:` — so alternating spellings still collide (C).
- *   - nothing path-only for file tools: `read`/`write`/`edit` are identified by
- *     POSITION through `exact:` (same file at the same offset, or the same
- *     replacement string). A different offset or region is a different action,
- *     and a path-only counter cannot tell the two apart — see CHANGELOG 0.2.2.
+ * Stages 1 and 2 are ADVISORY and cannot be delivered from the guard, which
+ * returns `string | undefined` and nothing else. They ride `tools/post-execute`
+ * as `additionalContexts`, the same channel `@deepseek-ai/dsh-repeat-tool-reminder`
+ * uses, stamped `source.kind: 'plugin'` (an unlabeled context renders as a user
+ * prompt in derived history).
  *
- * Counting lives in the GUARD and nowhere else: the guard commits a call on
- * BOTH outcomes (allow and deny) — every fingerprint when the call ran, only the
- * fingerprints that hit when it did not — which keeps a model hammering a denied
- * call from resetting its own budget, stops two calls racing in one step from
- * both seeing an empty window, and stops a denied call from spending budget on a
- * resource it never touched. `tools/post-execute` only records the settled result
- * text used in the denial message — it never counts.
+ * ## Why the ask lives in two hooks
+ *
+ * `tools/pre-execute` can ask but cannot deny; `ctx.tools.guard` can deny but
+ * cannot ask. The pipeline makes the two halves distinguishable (dsh-tools
+ * `prepareExecution`): a REJECTED ask never reaches the guard, while an APPROVED
+ * ask does. So `pendingAsk` carries the conversation — an entry consumed by the
+ * guard means "approved", an entry still present in `post-execute` means
+ * "declined".
+ *
+ * ## Counting lives in the guard and nowhere else
+ *
+ * The guard commits a call on BOTH outcomes — every fingerprint when the call
+ * ran, only the fingerprints that hit when it did not — which keeps a model
+ * hammering a denied call from resetting its own budget, stops two calls racing
+ * in one step from both seeing an empty window, and stops a denied call from
+ * spending budget on a resource it never touched. `tools/post-execute` only
+ * records the settled result text and settles the fate of a declined ask.
  *
  * Configuration is merged from the patch's `config:` and validated fail-loud in
  * `apply`; there is no schemastery schema export, which `cordis.resolveConfig`
  * tolerates.
  */
 
-import { allHitsRelaxable, blockingHits, compileTracked, isTracked, fingerprints } from './lib/fingerprints.js'
-import { denyMessage, localAskMessage, renderResult } from './lib/message.js'
+import { blockingHits, compileTracked, isTracked, fingerprints } from './lib/fingerprints.js'
+import { askMessage, denyMessage, renderResult, summarizeMessage, warnMessage } from './lib/message.js'
 import { createTracker, hasUserMessage } from './lib/window.js'
 import { mergeDefaults, validateCfg } from './lib/defaults.js'
 
@@ -72,6 +75,30 @@ function parts(exec) {
   }
 }
 
+/** A fresh message identity, without pulling in a uuid dependency. */
+function messageId() {
+  const uuid = globalThis.crypto?.randomUUID?.()
+  if (typeof uuid === 'string') return `${name}-${uuid}`
+  return `${name}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/**
+ * Build the message object an `additionalContexts` entry must be. Mirrors
+ * `createUserMessage` from the sibling reminder plugin: user-role content plus a
+ * `source` the harness can label with, frozen before publication.
+ * @param text - the advisory text.
+ * @param summary - a one-line summary for derived history.
+ * @returns a frozen message.
+ */
+function noticeMessage(text, summary) {
+  return Object.freeze({
+    id: messageId(),
+    role: 'user',
+    content: Object.freeze([Object.freeze({ type: 'text', text })]),
+    source: Object.freeze({ kind: 'plugin', plugin: name, form: 'notice', summary }),
+  })
+}
+
 /**
  * Install the breaker.
  * @param ctx - plugin context (must expose `tools`).
@@ -84,50 +111,81 @@ export function apply(ctx, config = {}) {
   const tracked = compileTracked(cfg)
   /**
    * Executions this plugin has asked about, mapped to what it would have denied.
-   *
-   * This is how the two halves of the `ask` policy talk to each other, and it
-   * rests on one fact of the pipeline (dsh-tools `prepareExecution`):
-   *
-   *   - a REJECTED ask never reaches the guard — the registry materializes the
-   *     denial straight from the approval decision — so a pending entry left in
-   *     `post-execute` means "the operator said no";
-   *   - an APPROVED ask does reach the guard, so an entry consumed there means
-   *     "the operator said yes". The guard cannot be told otherwise: it runs
-   *     AFTER the approval resolves and can only deny.
+   * See the module docstring: the guard consuming an entry means the operator
+   * approved; the entry surviving into `post-execute` means they declined.
    */
   const pendingAsk = new WeakMap()
+  /**
+   * The advisory text owed to one execution, computed in the guard (the only
+   * place that sees the counts) and attached in `post-execute` (the only place
+   * that can add context).
+   */
+  const advisoryFor = new WeakMap()
   /** Disposers of everything this plugin registered, run by the returned teardown. */
   const teardown = []
 
   /**
    * Decide the fate of one call: its fingerprints, the hits, and what still
-   * blocks once the agent's local exemption is taken into account.
+   * blocks once this turn's exemptions are taken into account.
    * @param exec - the pending tool execution.
    * @param agent - the calling agent.
    */
   const evaluate = (exec, agent) => {
     const { fps, local } = fingerprints(exec, cfg)
     const hits = tracker.wouldExceed(agent, fps)
-    const exempt = tracker.isLocalExempt(agent)
-    return { fps, local, hits, blocking: blockingHits(hits, local, exempt), exempt }
+    return { fps, local, hits, blocking: blockingHits(hits, tracker.exemptSet(agent)) }
   }
 
   /**
-   * Offer the operator the choice on a local block, once per turn. Runs before
-   * the guard, because a guard can only deny — it has no way to ask.
+   * Which advisory stage, if any, this call reaches — read BEFORE the call is
+   * committed, so `count` includes it.
+   *
+   * A stage fires on exact equality, so each crossing produces one message: the
+   * window slides, an exempted measure stops moving entirely, and a measure that
+   * sits above the gate does not keep re-announcing itself. When several
+   * measures cross at once, the strongest stage wins and ties go to the highest
+   * count.
+   * @param agent - the calling agent.
+   * @param fps - the call's fingerprints.
+   * @returns the advisory message, or `null`.
+   */
+  const stageAdvisory = (agent, fps) => {
+    const counts = tracker.tallyOf(agent)
+    let chosen = null
+    for (const fp of fps) {
+      const next = (counts.get(fp) ?? 0) + 1
+      let stage = 0
+      if (cfg.summarizeAt !== null && next === cfg.summarizeAt) stage = 2
+      else if (cfg.warnAt !== null && next === cfg.warnAt) stage = 1
+      if (stage === 0) continue
+      if (chosen === null || stage > chosen.stage || (stage === chosen.stage && next > chosen.next)) {
+        chosen = { stage, fp, next }
+      }
+    }
+    if (chosen === null) return null
+    const message =
+      chosen.stage === 2
+        ? summarizeMessage(chosen.fp, chosen.next, cfg)
+        : warnMessage(chosen.fp, chosen.next, cfg)
+    return noticeMessage(message, `${chosen.fp} × ${chosen.next}`)
+  }
+
+  /**
+   * Offer the operator the choice when a call is about to be gated, once per
+   * measure per turn. Runs before the guard, because a guard can only deny — it
+   * has no way to ask.
    */
   const onPre = ctx.on('tools/pre-execute', async (exec, next) => {
-    if (cfg.localHosts !== 'ask') return next()
+    if (cfg.onLimit !== 'ask') return next()
     const { name, agent } = parts(exec)
-    // An ask is only worth making when local traffic is the ONLY reason this call
-    // would be denied; a real repeat must stay a straight denial.
-    if (agent === null || !tracked(name) || tracker.isLocalRefused(agent) || tracker.isLocalExempt(agent)) {
-      return next()
-    }
-    const { fps, local, hits, blocking } = evaluate(exec, agent)
-    if (blocking.length !== hits.length || !allHitsRelaxable(hits, local)) return next()
-    pendingAsk.set(exec, { fps, hits })
-    return { kind: 'ask', reason: localAskMessage(hits, cfg) }
+    if (agent === null || !tracked(name)) return next()
+    const { fps, hits, blocking } = evaluate(exec, agent)
+    if (blocking.length === 0) return next()
+    // If ANY blocking measure was already declined this turn, an approval could
+    // not unblock this call anyway — so do not ask, just deny.
+    if (blocking.some((hit) => tracker.isRefused(agent, hit.fp))) return next()
+    pendingAsk.set(exec, { fps, hits: blocking })
+    return { kind: 'ask', reason: askMessage(blocking, cfg) }
   })
   teardown.push(onPre)
 
@@ -140,56 +198,80 @@ export function apply(ctx, config = {}) {
     if (agent === null || !tracked(name)) return undefined
 
     // Reaching the guard with a pending ask means the operator approved it.
-    if (pendingAsk.has(exec)) {
+    const approved = pendingAsk.get(exec)
+    if (approved !== undefined) {
       pendingAsk.delete(exec)
-      tracker.exemptLocal(agent)
+      tracker.exemptFingerprints(
+        agent,
+        approved.hits.map((hit) => hit.fp),
+      )
     }
 
-    const { fps, local, hits, blocking } = evaluate(exec, agent)
-    tracker.commit(agent, fps, blocking)
-    if (blocking.length === 0) return undefined
-    const localOnly = allHitsRelaxable(blocking, local)
-    return denyMessage({
-      name,
-      hits: blocking,
-      lastResult: tracker.slot(agent).lastResult,
-      cfg,
-      local: localOnly ? (tracker.isLocalRefused(agent) ? 'refused' : 'policy') : undefined,
-    })
-  }
+    const { fps, blocking } = evaluate(exec, agent)
 
+    if (blocking.length > 0) {
+      tracker.commit(agent, fps, blocking)
+      return denyMessage({
+        name,
+        hits: blocking,
+        lastResult: tracker.slot(agent).lastResult,
+        cfg,
+        refused: blocking.every((hit) => tracker.isRefused(agent, hit.fp)),
+      })
+    }
+
+    // Allowed. The advisory is computed BEFORE the commit, so this call is
+    // counted in the number it reports.
+    const advisory = stageAdvisory(agent, fps)
+    if (advisory !== null) advisoryFor.set(exec, advisory)
+    tracker.commit(agent, fps, [])
+    return undefined
+  }
 
   const disposeGuard = ctx.tools.guard(guard)
   if (typeof disposeGuard === 'function') teardown.push(disposeGuard)
 
-  // Records the settled result text quoted by a later denial. No counting here:
-  // denied calls also reach this waterfall, so counting would double-count.
+  // Records the settled result text quoted by a later denial, settles the fate of
+  // a declined ask, and attaches any advisory the guard computed.
   //
-  // It also settles the fate of an ask. A rejected ask never reached the guard
-  // (see `pendingAsk`), so a pending entry here means the operator declined:
-  // spend the budget anyway, so the next identical local call is denied outright
-  // instead of re-asking, and remember the refusal for the rest of the turn.
+  // No counting here: denied calls also reach this waterfall, so counting would
+  // double-count. The guard is the only counter.
+  //
+  // The advisory merge requires awaiting `next()` rather than returning it, so a
+  // downstream block's decision is preserved and the context composes with it
+  // instead of replacing it.
   const onPost = ctx.on('tools/post-execute', async (exec, result, next) => {
     const { name, agent } = parts(exec)
-    if (agent === null) return next()
-    const pending = pendingAsk.get(exec)
-    if (pending !== undefined) {
-      pendingAsk.delete(exec)
-      tracker.refuseLocal(agent)
-      tracker.commit(agent, pending.fps, pending.hits)
-      return next()
+    if (agent !== null) {
+      const pending = pendingAsk.get(exec)
+      if (pending !== undefined) {
+        // A rejected ask never reached the guard, so a surviving entry means the
+        // operator declined: spend the budget anyway, so the next identical call
+        // is denied outright instead of re-asking, and remember the refusal.
+        pendingAsk.delete(exec)
+        tracker.refuseFingerprints(
+          agent,
+          pending.hits.map((hit) => hit.fp),
+        )
+        tracker.commit(agent, pending.fps, pending.hits)
+      } else if (tracked(name) && result?.isError !== true) {
+        const text = renderResult(result)
+        if (text) tracker.slot(agent).lastResult = text.slice(0, cfg.resultPreviewChars)
+      }
     }
-    if (tracked(name) && result?.isError !== true) {
-      const text = renderResult(result)
-      if (text) tracker.slot(agent).lastResult = text.slice(0, cfg.resultPreviewChars)
-    }
-    return next()
+
+    const downstream = await next()
+    const advisory = advisoryFor.get(exec)
+    advisoryFor.delete(exec)
+    if (advisory === undefined) return downstream
+    const existing = Array.isArray(downstream?.additionalContexts) ? downstream.additionalContexts : []
+    return { ...downstream, additionalContexts: [advisory, ...existing] }
   })
   teardown.push(onPost)
 
-  // A real human turn clears that agent's window. Plugin notices and tool
-  // results do not, so the breaker's own denial never resets the budget it is
-  // trying to enforce.
+  // A real human turn clears that agent's window — and with it the exemptions and
+  // refusals. Plugin notices and tool results do not, so the breaker's own
+  // messages never reset the budget they are trying to enforce.
   const onPreStep = ctx.on('agent/pre-step', (input, next) => {
     const agent = input?.agent ?? null
     if (agent !== null && hasUserMessage(input?.messages)) tracker.reset(agent)

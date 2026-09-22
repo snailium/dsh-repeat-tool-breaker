@@ -30,9 +30,10 @@
 #
 # The row below deliberately carries NO `config:`, so the plugin's own
 # fail-loud DEFAULTS apply — and those DEFAULTS are exactly the table documented
-# in the README (window 12; localHosts ask; limits exact/cmd/net/sink 5, and the
-# volume budgets — site, family:*, verb:* — off; decoy argument names ignored on
-# every tool). Restating the table here would only create a second copy that can
+# in the README (window 16; localHosts deny; onLimit ask; the stage thresholds
+# warnAt 3 / summarizeAt 6; limits exact/cmd/net/sink/host 9, and the volume
+# budgets — site, family:*, verb:* — off; decoy argument names ignored on every
+# tool). Restating the table here would only create a second copy that can
 # silently go stale — and because ARRAYS in a patch REPLACE the default array,
 # a stale two-entry `exclude:` would drop the default `todo_write` entry.
 #
@@ -44,8 +45,12 @@
 #
 #   - id: repeat-tool-breaker
 #     config:
-#       window: 12                  # recent calls per agent that are counted
-#       localHosts: ask             # ask | deny | allow (ask degrades to deny with no answerer)
+#       window: 16                  # recent calls per agent that are counted
+#       localHosts: deny            # deny | allow (asking is `onLimit`, not this)
+#       onLimit: ask                # ask | deny — what happens AT a limits entry
+#       warnAt: 3                   # stage 1; 0/negative/null disables it
+#       summarizeAt: 6              # stage 2; 0/negative/null disables it
+#       includeLocal: false         # whether local hosts feed the host: measure
 #       previewChars: 400           # truncation for quoted fingerprints
 #       resultPreviewChars: 800     # truncation for the quoted previous result
 #       exclude:
@@ -58,13 +63,17 @@
 #       hostAliases:                # merged over the defaults
 #         open-data.canada.ca: open.canada.ca
 #       limits:                     # merged over the defaults; null = uncapped
-#         exact: 5                  # deny the 5th identical (cleaned) call
-#         cmd: 5                    # deny the 5th same command, flags stripped
-#         net: 5                    # deny the 5th fetch of the same host+path
-#         sink: 5                   # deny the 5th shell write to the same path
+#         # `limits` IS the stage-3 threshold. There is deliberately no `gateAt`:
+#         # a separate gate number would be the same value written twice.
+#         exact: 9                  # gate the 9th identical (cleaned) call
+#         cmd: 9                    # gate the 9th same command, flags stripped
+#         net: 9                    # gate the 9th fetch of the same host+path
+#         sink: 9                   # gate the 9th shell write to the same path
+#         host: 9                   # gate the 9th call to the same host (new in 0.4.0)
 #         # volume budgets are OFF by default: they cannot tell a crawl from
 #         # progress, and every value tried caused a false positive on a live
-#         # session. Set one only if you want a crawl budget.
+#         # session. `host:` is not one of them — it counts ONE target, which is
+#         # what a fixed strategy looks like. Set a budget only if you want one.
 #         site: null
 #         'family:http-fetch': null
 #         'verb:curl': null

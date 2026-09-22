@@ -5,6 +5,84 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-21
+
+The escalation release. Repetition is no longer a wall you hit once: the same
+measure now warns, then demands a summary, and only then gates — and the gate asks
+the operator instead of silently blocking.
+
+### Added
+
+- **Two advisory stages under the cap.** Repeating one measure inside a turn now
+  escalates: `warnAt` (3) says "you are repeating yourself, consider another
+  route"; `summarizeAt` (6) demands a written progress summary and at least two
+  approaches the model has not tried, plus an instruction to use a **larger
+  per-batch amount** so there are fewer batches. Both are delivered as
+  `additionalContexts` on `tools/post-execute` — the channel
+  `@deepseek-ai/dsh-repeat-tool-reminder` uses — stamped `source.kind: 'plugin'`.
+  A stage fires once per crossing, on exact equality, so the window sliding does
+  not re-announce it.
+  A stage is disabled by `0`, a negative number or `null`, silently: that is the
+  documented off-switch, not a value to reject.
+
+- **`onLimit`: what happens at the cap.** `ask` (default) offers the operator a
+  turn-scoped exemption; `deny` blocks outright. `ask` is fail-closed — every
+  unattended approval outcome is a denial, so a headless profile denies by itself
+  and nothing stalls.
+
+- **The `host:` measure.** `net:` keeps the query by design (that is what makes
+  `?page=2` a different resource, fixed in 0.3.2), which means an agent grinding
+  one API produces entirely distinct `net:` entries and nothing accumulates.
+  `site:` collapses to the last two DNS labels, so `api.weather.gc.ca` and every
+  other `*.gc.ca` host share one identity. The host is the level at which "the
+  same target again" is both true and discriminating, and it is what makes a fixed
+  strategy visible. Local hosts are excluded from it by default
+  (`includeLocal: false`); `localHosts: allow` still emits no target fingerprints.
+
+- **Per-fingerprint exemptions.** An approved exemption covers exactly the measures
+  that hit, stops counting them for the rest of the turn, and says nothing about
+  any other measure.
+
+### Changed
+
+- **The cap moves from 5 to 9** — `exact`, `cmd`, `net`, `sink` and the new
+  `host`. Two escalations now sit underneath it, so the hard break moves later
+  rather than staying at the first threshold.
+- **`window` moves from 12 to 16.** Measured against a corpus with known outcomes
+  and against the production sessions, the wider window changed no verdict: the
+  failing sessions reached a host count of 18 either way, and the one successful
+  session that grinds stayed at 5. It admits three more sessions at the gate stage
+  in production. Adopted for margin, not because 12 was shown to miss.
+
+### Removed
+
+- **`localHosts: ask`.** Asking is no longer a local-only concern — it is what
+  `onLimit` does for every measure — so `localHosts` keeps only `deny` and
+  `allow`. A config still carrying `localHosts: ask` fails loud at load with the
+  migration (`use `onLimit: ask``), the same way 0.2.0 handled a removed key.
+
+### Fixed
+
+- **The 0.3.2 changelog was wrong about `site:`.** It claimed "`site:` no longer
+  merges unrelated services"; `siteOf` has not changed since v2 and still collapses
+  to two labels. 0.3.2 turned the `site:` *cap* off — it never fixed the merge. The
+  host measure is the fix.
+
+### Notes
+
+- **No setting is validated against another.** A `limits` entry below a stage means
+  "no escalation for this measure", and inverted stages simply fire in the other
+  order. Both are ways to express intent, and second-guessing them would be worse
+  than accepting them.
+- **Pagination is handled by the escalation, not by an exemption.** 0.3.2 made
+  pagination stop colliding on `net:`; eight distinct pages of one host now reach
+  `host: 8`, so the ninth request to that host is the cap-th. That is intended, not
+  a leftover: stage 2 at 6 is where a model processing in batches is told to use a
+  larger per-batch amount, and one that takes the advice finishes well under the gate
+  at 9. The advice is deliberately backend-agnostic — the same shape appears when an
+  agent reads a file line by line — and a test pins that it never names HTTP paging.
+  `T14c` asserts the shape.
+
 ## [0.3.3] - 2026-09-15
 
 ### Changed
@@ -370,7 +448,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.0...v0.3.1

@@ -40,7 +40,8 @@ DSH_PREFIX=${DSH_PREFIX:-$(cd "$PLUGIN_DIR/.." && pwd)/.rtb-compat}
 DSH_BIN=${DSH_BIN:-$DSH_PREFIX/node_modules/.bin/dsh}
 COMPAT_HOME=${COMPAT_HOME:-$DSH_PREFIX/home}
 MOCK_PORT=${MOCK_PORT:-18999}
-MOCK_REPEATS=${MOCK_REPEATS:-4}
+# Scenario 1's repeat count is derived from the cap further down, once the plugin's
+# own defaults have been read — see `MOCK_REPEATS=${MOCK_REPEATS:-$((CAP - 1))}`.
 PLUGIN_SPEC=${PLUGIN_SPEC:-$PLUGIN_DIR}
 ENDPOINT="http://127.0.0.1:${MOCK_PORT}/v1"
 
@@ -179,6 +180,12 @@ DEFAULTS=$(node --input-type=module -e "
 ")
 CAP=${DEFAULTS% *}
 POLICY=${DEFAULTS#* }
+# Scenario 1 must make MORE than CAP identical calls, so the cap-th and everything
+# after it is actually DENIED. This used to default to CAP-1 — exactly the number of
+# allowed attempts — which meant the scenario exercised only the allow path while its
+# header comment claimed it denied everything after CAP-1. Deriving both numbers from
+# the cap is what makes the harness survive a retune.
+MOCK_REPEATS=${MOCK_REPEATS:-$((CAP + 1))}
 echo "=== shipped defaults under test: cap=$CAP localHosts=$POLICY ==="
 
 # Scenario 1 — identical repeats: attempts 1..cap-1 run, the rest are denied.

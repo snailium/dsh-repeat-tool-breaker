@@ -5,15 +5,18 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 
-Hard break on an agent's repeated tool calls. A local, dependency-free
+Escalating repeat detection for an agent's tool calls. A local, dependency-free
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin
-that registers one synchronous gate on the public `ctx.tools.guard` API: when a
-call repeats an action already seen inside the agent's sliding window, the call
-is **denied before it executes** and the model gets an `isError` result starting
+that registers one synchronous gate on the public `ctx.tools.guard` API. A
+measure repeated inside the agent's sliding window is not stopped at the first
+threshold: it escalates — a light warning at 3, a written-summary demand at 6,
+and the gate at 9, where the operator is offered a turn-scoped exemption
+(`onLimit: ask`, the default) or the call is denied outright. When the gate
+denies, the call never executes and the model gets an `isError` result starting
 with `REPEAT_TOOL_BLOCKED` that quotes the previous result and says what to do
 instead.
 
-In one paragraph, the v1 → v2 story:
+In one paragraph, the v1 → v2 → 0.4.0 story:
 
 > **v1 lost** because it counted *byte-identical consecutive* calls while the
 > model varied a presentation field (`description: '1st'|'2nd'|'3rd'`, churning
@@ -21,21 +24,86 @@ In one paragraph, the v1 → v2 story:
 > (`open-data.canada.ca` ↔ `open.canada.ca`) with a different `--max-time` each
 > time — every call looked new, so the counter never advanced.
 > **v2 wins** by deleting decoy arguments before any fingerprint is built, then
-> counting *semantic* fingerprints (`net:`, `site:`, `sink:`, `cmd:`, `exact:`,
-> `family:`, `verb:`) over a per-agent window of the last 12 calls, so a repeat
-> has to change the actual resource — not its spelling — to pass.
+> counting *semantic* fingerprints (`exact:`, `cmd:`, `net:`, `host:`, `site:`,
+> `sink:`, `family:`, `verb:`) over a per-agent window of the last 16 calls, so a
+> repeat has to change the actual resource — not its spelling — to pass.
+> **0.4.0 adds escalation**: the same measure warns at 3, demands a summary at 6,
+> and only gates at 9, and the gate asks the operator rather than blocking
+> silently.
 
 ## The three loops, and what catches each
 
 | | Loop | Caught by |
 |---|---|---|
-| **A** | the same `read`/`write`/`bash` arguments again, verbatim | `exact:` (5) |
-| **B** | `description: '1st'/'2nd'/'3rd'`, `command` unchanged | decoy arguments are stripped **before** fingerprinting, so the calls become byte-identical → `exact:` (5) |
-| **C** | `curl --max-time 60 open-data.canada.ca` ↔ `curl --max-time 30 open.canada.ca` | `net:` (5) after host-alias folding, plus `sink:` (5) and `cmd:` (5) after volatile-flag stripping |
+| **A** | the same `read`/`write`/`bash` arguments again, verbatim | `exact:` (9) |
+| **B** | `description: '1st'/'2nd'/'3rd'`, `command` unchanged | decoy arguments are stripped **before** fingerprinting, so the calls become byte-identical → `exact:` (9) |
+| **C** | `curl --max-time 60 open-data.canada.ca` ↔ `curl --max-time 30 open.canada.ca` | `net:` (9) after host-alias folding, plus `sink:` (9) and `cmd:` (9) after volatile-flag stripping |
+
+A fixed strategy is a fourth failure mode that none of those loops catches: a
+high-volume but *non-repetitive* run against one target, where every query string
+differs so `net:` never collides. On the reference deployment one agent made 30
+`bash`/`curl` calls against a single host in one turn and never converged. The
+`host:` measure (new in 0.4.0, cap 9) is what makes it visible; see
+[How a call is fingerprinted](#how-a-call-is-fingerprinted).
 
 The sibling official plugin `@deepseek-ai/dsh-repeat-tool-reminder` (advisory, at
 3/5/8 repeats) may stay on — the two compose, with the reminder as the soft nudge
-and this breaker as the hard gate at 5.
+and this breaker as the escalating gate that asks at 9.
+
+## The three stages
+
+Every measure — one fingerprint identity such as `exact:<tool>:…`,
+`net:<host><path>?<query>`, or `host:<host>` — has the same three thresholds. A
+stage fires **once per crossing, on exact equality**: the count *including* the
+current call must equal the threshold, so the window sliding does not
+re-announce it.
+
+| Count | Setting | Stage | What happens |
+|---|---|---|---|
+| 3 | `warnAt` | 1 — light warning | The model is told it is repeating and should consider whether a different route would get there faster. Nothing is blocked and nothing is demanded. |
+| 6 | `summarizeAt` | 2 — summary demand | The model must write down what it established, what it assumed without verifying, what failed and why, and **at least two approaches it has not tried** — plus an instruction to use a **larger per-batch amount** so there are fewer batches. Nothing is blocked. |
+| 9 | the `limits` entry | 3 — the gate | `onLimit: ask` (default) offers the operator a turn-scoped exemption; `onLimit: deny` blocks outright. An unattended ask degrades to a denial. |
+
+`limits` **is** the stage-3 threshold. There is deliberately no separate
+`gateAt`: a second gate number would be the same value written twice, and two
+knobs that must agree will eventually disagree.
+
+Stages 1 and 2 are advisory. A guard can only return a denial, so the guard
+computes the advisory while it still sees the counts and `tools/post-execute`
+attaches it as an `additionalContexts` entry — the channel
+`@deepseek-ai/dsh-repeat-tool-reminder` uses — stamped `source.kind: 'plugin'`.
+It composes with a downstream block rather than replacing it. (An unlabeled
+context would render as a user prompt in derived history, which is why the
+`source` is mandatory.)
+
+Each stage is an ordinary, independent setting, and **no setting is validated
+against another**:
+
+- `0`, a negative number, or `null` disables a stage **silently** — that is the
+  documented off-switch, not a value to reject;
+- a `limits` entry at or below a stage means "no escalation for this measure":
+  `exact: 5` under `warnAt: 3` gates at 5 with no warning at all;
+- inverted stages are legal too — the stronger message simply fires first.
+
+When several measures cross a stage on the same call, the strongest stage wins
+and ties go to the highest count.
+
+### `onLimit` — what happens at the gate
+
+| Value | Behaviour |
+|---|---|
+| `ask` (default) | The operator is offered a turn-scoped exemption, **once per measure per turn**. Approving exempts exactly the fingerprints that hit, stops counting them for the rest of the turn, and lets later identical calls ride along; declining stops the asking for those measures and denies them until the next human message. |
+| `deny` | Never ask. The cap-th call is denied outright with `REPEAT_TOOL_BLOCKED`. |
+
+`ask` is the default because it is **fail-closed**. Every unattended outcome of an
+approval is a denial — `rejected` (the session policy is `never`), `cancelled`
+(the turn was aborted), and `unavailable`, the value the registry falls back to
+when no answerer is registered — so a headless profile degrades to `deny` on its
+own and nothing stalls. Exemptions are **per fingerprint**: an exemption for
+`host:api.weather.gc.ca` says nothing about `exact:` or about a different host.
+
+Asking used to be local-only (`localHosts: ask`). Since 0.4.0 it is what
+`onLimit` does for every measure; see [Local addresses](#local-addresses).
 
 ## Requirements
 
@@ -125,8 +193,10 @@ tool/call
 
 Returning a `string` from a guard is a **final, monotonic denial**: it cannot be
 re-allowed by listener ordering, and — critically — **the tool body never runs**.
-That is what distinguishes a hard break from the official reminder, which only
-injects a softer "you repeated X" message after the call already executed.
+That is what distinguishes the gate from the official reminder, which only injects
+a softer "you repeated X" message after the call already executed. Since 0.4.0 the
+breaker also has its own two advisory stages, delivered on the same
+`tools/post-execute` channel (see [The three stages](#the-three-stages)).
 
 The guard is deliberately synchronous: no `await`, no DNS, no disk reads.
 
@@ -141,7 +211,8 @@ denies the call, so dodging one (a new host spelling) still collides on another
 | `exact:<tool>:<json>` | tool name + arguments with decoy fields deleted, keys deep-sorted | A, B |
 | `cmd:<verb>:<command>` | verb + command with volatile flags (`--max-time`, `-s`, `--retry`, `timeout N`, `-sSL` clusters…) removed | C, B |
 | `net:<host><path>?<query>` | `http(s)` URL with the scheme defaulted, `www.` and default ports dropped, host aliases folded, the fragment discarded, a trailing slash trimmed, and the **query kept** (sorted, tracking parameters removed) — the query is what makes `?page=2` a different resource | C, and it must NOT fire on pagination |
-| `site:<last-2-labels>` | registrable-ish site of each URL (IP literals stand alone) — note this merges `api.github.com` into `github.com` | not capped by default; see [Local addresses](#local-addresses) |
+| `host:<host>` | normalized host of each URL, with no path and no query (new in 0.4.0) | a fixed strategy: many *distinct* requests against one target, which `net:` cannot see because every query string differs. Local hosts are excluded by default (`includeLocal`) |
+| `site:<last-2-labels>` | registrable-ish site of each URL (IP literals stand alone) — note this merges `api.github.com` into `github.com` | not capped by default: `siteOf()` collapses to two labels, so it merges unrelated services (`api.weather.gc.ca` → `gc.ca`); the `host:` measure is the discriminating one |
 | `sink:<path>` | `-o`/`--output`/`-O`/`>`/`>>`/`tee` target of a shell command — except generic destinations (`/dev/null`, `-`, …), which say nothing about *which* resource was fetched | C |
 | `family:http-fetch` | every `curl` / `wget` / `http` / `httpie` / URL-taking tool call | nothing by default — a volume budget no setting of which avoided false positives |
 | `verb:<cmd>` | the first non-wrapper command word (`sudo`, `timeout 30`, `FOO=1` are transparent) | tool-swapping within one verb |
@@ -149,54 +220,50 @@ denies the call, so dodging one (a new host spelling) still collides on another
 ### Local addresses
 
 `localhost`, loopback, RFC1918 and link-local hosts are what a development loop
-talks to — a dev server, a local inference endpoint, a container — and a `site:`
-budget cannot tell them apart from a web crawl. `localHosts` decides:
+talks to — a dev server, a local inference endpoint, a container — and a
+target-scoped fingerprint cannot tell them apart from a web crawl. `localHosts`
+decides whether local traffic is fingerprinted at all:
 
 | Value | Behaviour |
 |---|---|
-| `ask` (default) | the first local call that would be blocked asks the operator instead — once per turn |
-| `deny` | never ask: local calls are counted and blocked like any other host, and the denial names this knob |
-| `allow` | local traffic is never fingerprinted |
+| `deny` (default) | local calls are counted and blocked like any other host |
+| `allow` | local traffic is never fingerprinted: no `net:`, `site:`, `host:`, `sink:`, `family:` or `verb:` is emitted, so only `exact:` and `cmd:` still identify the action |
 
-`ask` is the default because it is **fail-closed**. Every unattended outcome of an
-approval is a denial — `rejected` (the session policy is `never`), `cancelled`
-(the turn was aborted), and `unavailable`, which is what the registry falls back to
-when no answerer is registered — so a headless profile degrades to `deny` on its
-own. Nothing has to be configured per profile:
+The `ask` value was **removed in 0.4.0**. Asking is no longer a local-only
+concern — it is what the gate does for every measure — so it moved to `onLimit`.
+A config still carrying `localHosts: ask` fails loud at load with the migration
+hint ``use `onLimit: ask` ``, the same way 0.2.0 handled a removed key; the only
+accepted values are `deny` and `allow`.
 
-- a profile with a UI gets the prompt;
-- a profile without one keeps blocking local calls, and the only difference from
-  `deny` is that the model's *first* blocked local call of a turn is told
-  "requires approval" instead of `REPEAT_TOOL_BLOCKED` (from the second one on the
-  breaker's own message applies again).
-
-Set `deny` where even that is unwanted, or `allow` to stop counting local traffic
-entirely:
+Local hosts are also excluded from the `host:` measure by default
+(`includeLocal: false`). A development loop against localhost is the canonical
+legitimate case, and the documented `site:127.0.0.1` false positive came from
+exactly this class. `localHosts: allow` still wins — it emits no target
+fingerprints at all.
 
 ```yaml
 - id: repeat-tool-breaker
   config:
-    localHosts: deny
+    localHosts: deny          # deny | allow
+    includeLocal: false       # whether local hosts feed the `host:` measure
 ```
 
-What an approval buys: the local **target** fingerprints (`net`, `site`, `sink`,
-`family`, `verb`) stop blocking for the rest of that turn. What it does not buy:
-`exact` and `cmd` are untouched, because a byte-identical repeat is a loop whether
-or not it points at localhost — and a call that mentions even one public URL is
-not a local call at all. Declining an ask stops the asking and behaves like `deny`
-until the next human message.
-
-An ask is only ever made when local traffic is the *only* reason the call would be
-denied, so a real repeat is a straight denial rather than a prompt.
+Because `exact` and `cmd` identify the ACTION rather than a target, `allow` does
+not relax them: a byte-identical repeat is a loop whether or not it points at
+localhost, and a call that mentions even one public URL is not a local call at
+all.
 
 ### Counting rules
 
-- State is a **per-agent sliding window** (`window`, default 12 calls) held in a
+- State is a **per-agent sliding window** (`window`, default 16 calls) held in a
   `WeakMap` keyed by the live `Agent` object — one agent's loop never trips
   another's, and subagents get their own budget.
 - A call is denied when a fingerprint **already appears `limit - 1` times** in the
   window, i.e. when the current call would be the `limit`-th occurrence. The first
   occurrence of anything is therefore always allowed.
+- The two advisory stages are computed **before** the commit, so the count they
+  report includes the current call, and each fires only when the count equals its
+  threshold.
 - The guard **commits on both outcomes**, but *what* it commits differs, and that
   difference is load-bearing:
   - an **allowed** call commits every fingerprint it carries — the action really
@@ -208,9 +275,14 @@ denied, so a real repeat is a straight denial rather than a prompt.
     could not fetch that URL through *any* tool for the rest of the turn. The
     hitting fingerprints are already at their cap, so re-attempting the blocked
     call stays blocked either way.
+- An approved **exemption stops counting**, not merely blocking: the exempted
+  fingerprints are dropped at commit time, so they are not incremented and cannot
+  escalate again for the rest of the turn. An exemption is per fingerprint and
+  says nothing about any other measure.
 - A real **user message** (`agent/pre-step` with source `kind: 'user'`) clears that
-  agent's window. Plugin notices and tool results do **not** — otherwise the
-  breaker's own denial would reset the budget it is enforcing.
+  agent's window — and with it the exemptions and the refusals. Plugin notices and
+  tool results do **not** — otherwise the breaker's own denial would reset the
+  budget it is enforcing.
 - Excluded tools (`exclude`, default `todo_write`; `*`-wildcards supported) are
   fully transparent: they neither count nor reset.
 
@@ -227,8 +299,12 @@ at which point `ctx.tools.guard` is the genuine method.
     - id: repeat-tool-breaker
       name: dsh-repeat-tool-breaker
       config:
-        window: 12                  # recent calls per agent that participate
-        localHosts: ask             # ask | deny | allow — see "Local addresses"
+        window: 16                  # recent calls per agent that participate
+        onLimit: ask                # ask | deny — what happens AT `limits`
+        localHosts: deny            # deny | allow — see "Local addresses"
+        warnAt: 3                   # stage 1; 0 / negative / null disables it
+        summarizeAt: 6              # stage 2; 0 / negative / null disables it
+        includeLocal: false         # whether local hosts feed the `host:` measure
         previewChars: 400           # truncation for quoted fingerprints
         resultPreviewChars: 800     # truncation for the quoted previous result
         exclude: [todo_write]       # never counted, never resets (*-wildcards ok)
@@ -239,10 +315,12 @@ at which point `ctx.tools.guard` is the genuine method.
         hostAliases:                # merged over the defaults
           open-data.canada.ca: open.canada.ca
         limits:                     # merged over the defaults; null = uncapped
-          exact: 5
-          cmd: 5
-          net: 5
-          sink: 5
+          # `limits` IS the stage-3 threshold — there is no `gateAt`.
+          exact: 9
+          cmd: 9
+          net: 9
+          sink: 9
+          host: 9                   # new in 0.4.0: one target, many distinct requests
           site: null                # volume budgets: off by default, see "Tuning"
           'family:http-fetch': null
           'verb:curl': null
@@ -260,12 +338,18 @@ Merge semantics, which matter when retuning:
 - A patch replaces the targeted row's whole `config`, so `config` keys are not
   inherited from the bundle layer.
 
-Every value is validated fail-loud in `apply`: `window >= 4`, every limit either
-`null` or a finite number `>= 2` (a cap below 2 would deny the *first* call), and
-preview caps `>= 1`. Config keys removed in 0.2.0 (`denyAfter`, `warnAfter`,
-`registerAdvisory`, `maxSamePath`, `readTools`, `matchReadBySubstring`) throw with
-a pointer at their replacement rather than being ignored, so an upgraded profile
-cannot silently lose its tuning.
+Every value is validated fail-loud in `apply`: `window >= 4`; `onLimit` one of
+`ask`/`deny`; `localHosts` one of `deny`/`allow`; `includeLocal` a boolean; every
+limit either `null` or a finite number `>= 2` (a cap below 2 would deny the
+*first* call); `previewChars`/`resultPreviewChars` `>= 1`; and an enabled stage a
+positive integer. **No setting is checked against another** — inverted stages
+simply fire in the other order and a `limits` entry below a stage means "no
+escalation for this measure", both legitimate ways to express intent. Config keys
+removed in 0.2.0 (`denyAfter`, `warnAfter`, `registerAdvisory`, `maxSamePath`,
+`readTools`, `matchReadBySubstring`) throw with a pointer at their replacement
+rather than being ignored, and `localHosts: ask` (removed in 0.4.0) throws with
+the `onLimit: ask` migration — so an upgraded profile cannot silently lose its
+tuning.
 
 (The `- insert:` list is required to **add** a new plugin; a flat `- id:` entry is
 a reconfig of an already-present id and fails with "entry not found" for a plugin
@@ -275,7 +359,7 @@ that isn't yet in the composed tree.)
 
 The table mixes *precise* caps with *broad* ones, and the difference matters:
 
-- **precise, resource-scoped, cap 5**: `exact`, `cmd`, `net`, `sink`. These fire
+- **precise, action-scoped, cap 9**: `exact`, `cmd`, `net`, `sink`. These fire
   only when the same action actually happens again, and they are what catches
   loops. Every lower value was tried against real work and each produced a false
   positive. A cap of 2 leaves no room for the most common *non-loop* repeat: the
@@ -287,15 +371,26 @@ The table mixes *precise* caps with *broad* ones, and the difference matters:
   because `sink:` is path-only **by design** — its whole job is to catch one
   destination rewritten with ever-changing content — so a shell cycle that writes
   the same file several times while iterating looked exactly like a loop. At 5 an
-  ordinary edit/test cycle fits, and a call that keeps failing is still stopped on
-  its fifth attempt.
+  ordinary edit/test cycle fits. 0.4.0 moves the cap to **9** because two advisory
+  stages now sit underneath the gate — 3 warns, 6 demands a summary, 9 gates — so
+  the hard break moves *later* instead of firing at the first threshold.
+- **the new `host:` measure is active, and it is not a volume budget**: it counts
+  one normalized host, with no path and no query, so it fires when an agent keeps
+  going back to the same target with genuinely *different* requests. That is a
+  failure mode repetition counting cannot see — `net:` keeps the query by design,
+  so every page of one API is a different resource, and `site:` merges unrelated
+  services. It is reconciled with the disabled volume budgets by the mechanism
+  around it: its two lower stages are advisory, and its gate is operator-gated
+  (and fail-closed when unattended), rather than an automatic volume cap. The
+  measurement that set the threshold is in
+  [`docs/convergence-guard.md`](docs/convergence-guard.md).
 - **not counter-based at all**: file operations. There is no `readpath` or
   `writepath` limit. A file action is identified by its **position** through
   `exact:` — the same file at the same offset, or the same replacement string, is
   the same action and is denied; a different offset or a different region is a
   different action and is never blocked. 0.2.0 shipped path-only counters for
   these and they both had to be removed after blocking ordinary work on the
-  reference deployment (see [File operations](#file-operations)).
+  reference deployment.
 - **volume budgets, off by default**: `site`, `family:http-fetch`, `verb:curl`,
   `verb:wget`. These counted how MUCH one site or one verb was used. They are all
   `null` now, because a volume budget cannot tell a crawl from a session that is
@@ -313,8 +408,10 @@ The table mixes *precise* caps with *broad* ones, and the difference matters:
   detection` — a volume cap that pushes an agent to *work around the breaker*
   instead of changing approach is worse than no cap at all.
 
-  Repetition is what this plugin detects, and the resource-scoped caps do that:
-  `exact`, `cmd`, `net`, `sink`. If you do want a crawl budget, set one:
+  Repetition is what this plugin detects, and the action-scoped caps do that:
+  `exact`, `cmd`, `net`, and `sink` (one destination rewritten with changing
+  content). `host:` extends it to a target that is revisited with changing paths
+  and queries. If you do want a crawl budget, set one:
 
 ```yaml
 - id: repeat-tool-breaker
@@ -348,10 +445,13 @@ deployment.
    is the idiomatic way to ask for a status code, and treating `/dev/null` as
    action identity made four *different* URLs collide on `sink:/dev/null` starting
    with the second.
-4. **The volume caps ship at 6, not 4**, and **a denied call commits only the
-   fingerprints that hit.** Both were changed after live runs: the first because a
-   four-URL batch was blocked, the second because a denied `curl` was charging
-   `net:` for a URL it never fetched, locking the model out of that URL entirely.
+4. **The volume caps no longer ship at all**, and **a denied call commits only the
+   fingerprints that hit.** The first started as a deviation from the spec's `4`
+   (it shipped `6`) and 0.3.2 turned it off entirely: no value could tell a crawl
+   from progress, and every one tried produced a false positive on a live session
+   — see [Tuning](#tuning-and-how-these-numbers-were-chosen). The second was changed
+   because a denied `curl` was charging `net:` for a URL it never fetched, locking
+   the model out of that URL entirely.
 
 ## Development loop (dependency-free)
 
@@ -382,17 +482,33 @@ Two things worth knowing:
 npm test          # node --test test/breaker.test.js
 ```
 
-30 tests, no model or endpoint required. The suite mirrors the v2 spec's table
+48 tests, no model or endpoint required. The suite mirrors the v2 spec's table
 (T1 ping-pong, T2/T3 description decoys, T4 unrelated calls, T5 curl↔wget, T6
 exclusion, T7 per-agent isolation, T8 volatile flags, T9 normalizer units, T10
-read paths, T11 denied calls still spend budget) and adds the plugin-level wiring
+read paths, T11 denied calls still spend budget), adds the plugin-level wiring
 (T12: the guard denies, quotes the previous result, survives a plugin notice,
-resets on a human turn; T12c: the fail-loud config contract) and the documented
-shape of the shipped defaults (T14/T14b: volume is not a loop signal) and
-pagination (T14c: `?page=N` is a new resource, re-fetching one page is a loop).
+resets on a human turn; T12c: the fail-loud config contract), and documents the
+shipped defaults (T14: the 0.4.0 table; T14b/T14c: volume is not a loop signal,
+`?page=N` stays a new resource while `host:` is the convergence measure that
+accumulates across pages).
 
-Three assertions worth singling out, because they are the ones that would have
-caught v1 — or that caught v2's own defaults:
+The 0.4.0 escalation has its own tests:
+
+- `T24` — the three stages fire at exactly 3, 6 and 9 on one measure, and once
+  per crossing rather than on every later call;
+- `T25` — `host:` accumulates on a public host across distinct paths and queries,
+  while local hosts are excluded from it by default;
+- `T26` — an exemption covers only the measures that hit;
+- `T27` — a disabled stage is never delivered;
+- `T20`–`T23` — the gate end to end: an approved ask stops counting that measure
+  for the turn, any measure can be asked about (not only local targets), a
+  declined ask denies without re-prompting, and a human turn clears the exemption
+  and the window;
+- `T14d`–`T14f` — the silent stage off-switch, no cross-setting validation, and
+  the `localHosts: ask` migration error.
+
+Assertions worth singling out, because they are the ones that would have caught
+v1 — or that caught v2's own defaults:
 
 - every fingerprint of a `description: '1st'/'2nd'/'3rd'` call is asserted to
   contain neither the decoy text nor the `timeoutMs` value;
@@ -400,9 +516,11 @@ caught v1 — or that caught v2's own defaults:
   `exact:` fingerprints differ;
 - one failed attempt is asserted to leave room for the identical retry (`T2b`),
   while a call that keeps failing is still blocked;
-- the `localHosts` matrix is asserted end to end (`T17`–`T22`): a mixed call is
-  never askable, an approval exempts targets but not `exact`, and a refusal stops
-  the asking until the next human turn;
+- the local-address matrix and the gate are asserted end to end (`T17`–`T23`):
+  `localHosts: allow` emits no local target fingerprint, a mixed call (one local
+  plus one public URL) is not a local call, an approval exempts exactly the
+  measures that hit and no others, a refusal stops the asking until the next human
+  turn, and the gate is not local-only;
 - four *different* URLs writing to `/dev/null` are asserted to all be allowed, and
   a denied call is asserted **not** to spend `net:` budget on the URL it never
   fetched.
@@ -415,9 +533,15 @@ Qwen3.8-27B on llama.cpp, in a throwaway `DSH_HOME`:
 
 | Scenario | Result |
 |---|---|
-| `curl -s -o /tmp/od.html https://open-data.canada.ca/` (`description: '1st'`) then the same fetch of `https://open.canada.ca/` (`'2nd'`) | 1st executed; 2nd **blocked before execution**, hits `net:open.canada.ca/ 2/2` and `sink:/tmp/od.html 2/2` |
-| `echo hello-repeat` twice, `description` `'1st'` / `'2nd'`, `timeoutMs` 60000 / 1000 | 1st executed; 2nd **blocked**, hits the identical cleaned command |
+| `curl -s -o /tmp/od.html https://open-data.canada.ca/` (`description: '1st'`) then the same fetch of `https://open.canada.ca/` (`'2nd'`) | 1st executed; the 2nd **collided** on `net:open.canada.ca/` and `sink:/tmp/od.html` — it was denied then, under the cap in force at the time |
+| `echo hello-repeat` twice, `description` `'1st'` / `'2nd'`, `timeoutMs` 60000 / 1000 | 1st executed; the 2nd **collided** on the identical cleaned command |
 | four **different** URLs, one `curl` each | all four allowed and returned 200 |
+
+These runs predate 0.4.0, so the counts reflect the cap in force at the time (2,
+then 5) and there is no `host:` measure yet. What they establish is the
+*collision*: the alias spelling, the churning `--max-time` and the decoy
+`description` do not make a new action. Under the 0.4.0 defaults the same calls
+still collide, and the break lands at 9 with the two advisory stages before it.
 
 ### Real-pipeline check (no model needed)
 
@@ -434,9 +558,11 @@ DSH_NODE_MODULES=/path/to/dsh/node_modules/@deepseek-ai npm run test:pipeline
 `test/compat/` boots a **real** `dsh` of the version under test with this plugin
 mounted as a profile bundle, and drives it with a scripted mock model — no GPU,
 no real endpoint. `mock-llm.py` speaks enough of the OpenAI streaming protocol to
-make the agent issue the *same* `bash` call four times in a row, and
-`run-compat.sh` asserts the trajectory: attempts `1..cap-1` executed, the rest
-denied with `REPEAT_TOOL_BLOCKED`.
+make the agent repeat a scripted `bash` call, and `run-compat.sh` reads the
+shipped cap out of the plugin's own `DEFAULTS` (so a retune does not break the
+harness) and asserts the resulting tool-result trajectory. It also covers a
+local-address loop with no answerer, where the fail-closed `onLimit: ask` must
+deny rather than stall, and pagination of one endpoint, which must never block.
 
 ```bash
 DSH_PREFIX=/tmp/dsh-compat
@@ -450,7 +576,8 @@ DSH_PREFIX=$DSH_PREFIX ./test/compat/run-compat.sh
 It checks what unit tests cannot: that the loader accepts the `dsh.bundle`
 manifest, that the bundle's patch layer mounts the row, that `apply()` runs with
 `inject: ['tools']` satisfied, and that a denial reaches the model as an
-`isError` tool result. Reference output on `@deepseek-ai/dsh` 0.1.5-rc.2:
+`isError` tool result. Archived reference output, recorded on `@deepseek-ai/dsh`
+0.1.5-rc.2 with a shipped cap of 3:
 
 ```
 === dsh under test ===
@@ -468,6 +595,10 @@ compat run complete
 
 COMPAT: PASS (2 executed, 2 denied, cap=3)
 ```
+
+The attempt counts follow the cap the script derives from `DEFAULTS`, so the
+0.4.0 defaults move the whole trajectory (cap 9) without any change to the
+assertion shape.
 
 ## Releasing
 
@@ -505,10 +636,11 @@ the npm CLI explicitly because Node 22 bundles an older one.
 
 **Verified**
 
-- **Deterministic suite** (`npm test`) — 30 tests covering the full fingerprint
-  matrix, decoy stripping, host folding, sink extraction, window arithmetic,
-  per-agent isolation, the user-message reset, and the fail-loud config contract.
-  Runs in CI on Node 20 and 22 with no model or endpoint.
+- **Deterministic suite** (`npm test`) — 48 tests covering the full fingerprint
+  matrix, decoy stripping, host folding, sink extraction, the `host:` measure and
+  the three escalating stages, window arithmetic, per-agent isolation, the
+  user-message reset, the gate's ask/deny outcomes, and the fail-loud config
+  contract. Runs in CI on Node 20 and 22 with no model or endpoint.
 - **Loads and applies on a real DSH boot**, including as a profile bundle (the
   `dsh.bundle` layer mounts the row by package specifier). Verified on
   `@deepseek-ai/dsh` **0.1.2-rc.1** (the reference deployment) and
@@ -519,8 +651,9 @@ the npm CLI explicitly because Node 22 bundles an older one.
   `ToolExecutionInput`/`ToolExecution`, the decision unions and the
   `agent/pre-step` payload all diff clean, and the tool names the plugin keys on
   (`bash`/`pwsh`, `read`/`write`/`edit`, `web_fetch`/`web_search`) are stable.
-- **Driven by a real model in the `dsh-container` harness** — the three scenarios
-  in [Verified on a real model](#verified-on-a-real-model), plus the real
+- **Driven by a real model in the `dsh-container` harness** (under the pre-0.4.0
+  defaults) — the three scenarios in
+  [Verified on a real model](#verified-on-a-real-model), plus the real
   `ToolRuntime` pipeline driven in-process with a stub tool body (which proves the
   denied call's body is never entered).
 
@@ -553,7 +686,14 @@ the npm CLI explicitly because Node 22 bundles an older one.
 - **The denial text is the model's only new information**, so it names the
   fingerprints that hit with their counts, states explicitly that changing the
   description / `timeoutMs` / `--max-time` / host spelling is not a new action,
-  and quotes the previous result inline. It contains no `<tool_call>`-shaped
-  markup.
+  and quotes the previous result inline (or says the previous result is already
+  in the history). It contains no `<tool_call>`-shaped markup.
+- **Escalation is advisory first.** Stages 1 and 2 ride `tools/post-execute`
+  `additionalContexts` stamped `source.kind: 'plugin'`, because a guard can only
+  return a denial — and an unlabeled context would render as a user prompt in
+  derived history. The gate itself is split across two hooks: `tools/pre-execute`
+  can ask but cannot deny, and `ctx.tools.guard` can deny but cannot ask. A
+  rejected ask never reaches the guard, so "the guard saw this execution" is
+  exactly the approval signal.
 - **State is in-memory only**; a resumed session starts fresh (same tradeoff as
   the official reminder).
