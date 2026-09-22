@@ -7,6 +7,10 @@ Measurement, not opinion. Every number below was produced by
 Date: 2026-09-22 · Plugin under test: 0.4.1 · Corpus: 109 recorded sessions plus one
 stuck fixture.
 
+> **Status: adopted in 0.4.2.** §6's candidate D (`warnAt: 7`, `summarizeAt: 11`, caps
+> 12 with `host` at 16) is now the shipped default. The 0.4.0/0.4.1 numbers below are
+> the "before" side of the comparison, kept as the record of that decision.
+
 ---
 
 ## 1. The question
