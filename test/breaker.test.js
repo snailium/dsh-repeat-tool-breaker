@@ -952,3 +952,227 @@ test('T29: when several measures cross together, the message names the useful on
   )
   assert.doesNotMatch(seen[0], /exact:bash/, 'must not dump the command line')
 })
+
+// ---------------------------------------------------------------------------
+// T30+ — the failure track (0.5.0)
+//
+// A second escalation track on CONSECUTIVE FAILURES of one fingerprint. It shares
+// the gate, the exemptions and the measure set with the occurrence track, and it
+// differs in the one thing that matters: `isError` is NOT the failure definition.
+//
+// Every test here therefore uses the SAME target repeatedly. A per-fingerprint
+// streak only grows when one fingerprint keeps failing; varying the host makes each
+// fingerprint fail once, which is not a streak at all.
+// ---------------------------------------------------------------------------
+
+/** The failure track's thresholds, read from the shipped defaults. */
+const FAIL_WARN = cfg.failWarnAt
+const FAIL_LIMIT = cfg.failLimit
+
+/** A settled bash result. The structured `value` is what the classifier reads. */
+const result = (value, extra = {}) => ({
+  isError: false,
+  content: [{ type: 'text', text: 'some output' }],
+  value,
+  ...extra,
+})
+/** A command that ran and exited non-zero — NOT an `isError`. */
+const failed = (code = 1) => result({ kind: 'foreground', exitCode: code, signal: null, timedOut: false })
+/** A fetch that completed with an error status — NOT an `isError`. */
+const httpFailed = (status) => result({ url: 'https://x.example.com/', statusCode: status, truncated: false })
+const okResult = () => result({ kind: 'foreground', exitCode: 0, signal: null, timedOut: false })
+
+/** Drive one call through the real guard + post-execute pair. */
+async function drive(guards, post, exec, res, noop) {
+  const denial = guards[0](exec)
+  const decision = await post(exec, res, noop)
+  const advisory = (decision?.additionalContexts ?? [])
+    .filter((message) => message.source?.kind === 'plugin')
+    .map((message) => message.content[0].text)
+    .join('\n')
+  return { denial, advisory }
+}
+
+/** Only the failure track's advisory, so the occurrence track cannot be mistaken for it. */
+const isFailureAdvice = (text) => /has failed \d+ times in a row/.test(text)
+
+test('T30: consecutive failures warn, and isError is not the failure test', async () => {
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, { onLimit: 'deny' })
+  const post = handlers.get('tools/post-execute')
+  const noop = async () => ({ kind: 'allow' })
+  // One target, failing. The command is identical each time, but the OCCURRENCE
+  // track's first stage is warnAt (7) — well above FAIL_WARN — so anything seen at
+  // FAIL_WARN comes from the failure track alone. `exitCode: 1` is not an isError.
+  const target = 'curl -s "https://api.flaky.example.com/v1/items"'
+
+  const seen = []
+  for (let i = 1; i <= FAIL_WARN; i += 1) {
+    seen.push(await drive(guards, post, bash(target), failed(1), noop))
+  }
+  for (let i = 1; i < FAIL_WARN; i += 1) {
+    assert.equal(seen[i - 1].advisory, '', `nothing before ${FAIL_WARN} failures (call ${i})`)
+  }
+  const advice = seen[FAIL_WARN - 1].advisory
+  assert.ok(isFailureAdvice(advice), `expected the failure advisory, got: ${advice.slice(0, 80)}`)
+  assert.match(advice, new RegExp(`has failed ${FAIL_WARN} times in a row`))
+  assert.match(advice, /exited 1/, 'the failure detail is quoted')
+  assert.doesNotMatch(advice, /exact:bash/, 'no command line dump')
+  assert.doesNotMatch(advice, /has come up \d+ times this turn/, 'that is the other track')
+})
+
+test('T31: the failure gate blocks the failing target, not the recovery call', async () => {
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, { onLimit: 'deny' })
+  const post = handlers.get('tools/post-execute')
+  const noop = async () => ({ kind: 'allow' })
+  const target = 'curl -s "https://api.does-not-exist.invalid/v1/items"'
+
+  for (let i = 1; i <= FAIL_LIMIT; i += 1) {
+    const { denial } = await drive(guards, post, bash(target), httpFailed(404), noop)
+    assert.equal(denial, undefined, `call ${i} must be allowed (${i} failures, limit ${FAIL_LIMIT})`)
+  }
+
+  // The next attempt at the SAME target is blocked...
+  const blocked = await drive(guards, post, bash(target), httpFailed(404), noop)
+  assert.equal(typeof blocked.denial, 'string', 'the target that keeps failing is blocked')
+  assert.match(blocked.denial, /REPEAT_TOOL_BLOCKED/)
+  assert.match(blocked.denial, /consecutive failures/)
+  assert.match(blocked.denial, /404/, 'the status is named')
+
+  // ...but the recovery action is NOT. Blocking it is how a guard turns a stuck
+  // model into a wedged one.
+  const recovery = bash('grep -rn "does-not-exist" /workspace/src')
+  const allowed = await drive(guards, post, recovery, okResult(), noop)
+  assert.equal(allowed.denial, undefined, 'diagnosing must not be blocked')
+
+  const other = bash('curl -s "https://api.example.com/v1/items"')
+  const otherCall = await drive(guards, post, other, okResult(), noop)
+  assert.equal(otherCall.denial, undefined, 'a different target must not be blocked')
+})
+
+test('T32: a success clears the streak; a success of something else does not', async () => {
+  const target = 'curl -s "https://api.flaky.example.com/v1/items"'
+  const noop = async () => ({ kind: 'allow' })
+
+  // Part 1, on a fresh instance: FAIL_WARN - 1 failures, a success, then a failure.
+  // The streak restarted at 1, so nothing fires.
+  {
+    const { ctx, guards, handlers } = fakeCtx()
+    apply(ctx, { onLimit: 'deny' })
+    const post = handlers.get('tools/post-execute')
+    for (let i = 1; i < FAIL_WARN; i += 1) await drive(guards, post, bash(target), failed(1), noop)
+    await drive(guards, post, bash(target), okResult(), noop)
+    const after = await drive(guards, post, bash(target), failed(1), noop)
+    assert.equal(after.advisory, '', 'the streak restarted from 1')
+  }
+
+  // Part 2, on another fresh instance: a success of a DIFFERENT target must not
+  // clear it — a read is not progress on the thing that keeps failing.
+  {
+    const { ctx, guards, handlers } = fakeCtx()
+    apply(ctx, { onLimit: 'deny' })
+    const post = handlers.get('tools/post-execute')
+    let advice = ''
+    for (let i = 1; i <= FAIL_WARN; i += 1) {
+      const step = await drive(guards, post, bash(target), failed(1), noop)
+      if (isFailureAdvice(step.advisory)) advice = step.advisory
+      if (i === 1) await drive(guards, post, bash('ls -la /tmp'), okResult(), noop)
+    }
+    assert.match(
+      advice,
+      new RegExp(`has failed ${FAIL_WARN} times in a row`),
+      'an unrelated success must not reset another fingerprint',
+    )
+  }
+})
+
+test('T33: the plugin never counts its own denial as a failure', async () => {
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, { onLimit: 'deny' })
+  const post = handlers.get('tools/post-execute')
+  const noop = async () => ({ kind: 'allow' })
+  const target = 'curl -s "https://api.does-not-exist.invalid/v1/items"'
+
+  for (let i = 1; i <= FAIL_LIMIT; i += 1) {
+    await drive(guards, post, bash(target), httpFailed(404), noop)
+  }
+
+  // Feed the gate its own denial 20 times. If the plugin counted those, the streak
+  // would climb without limit — the guard feeding itself — and the reported count
+  // would drift far above failLimit.
+  let lastDenial = ''
+  for (let i = 0; i < 20; i += 1) {
+    const exec = bash(target)
+    const denial = guards[0](exec)
+    assert.equal(typeof denial, 'string', 'still blocked')
+    lastDenial = denial
+    await post(exec, { isError: true, content: [{ type: 'text', text: denial }] }, noop)
+  }
+  const reported = Number(/(\d+) consecutive failures/.exec(lastDenial)?.[1])
+  assert.equal(reported, FAIL_LIMIT, 'the streak did not grow from our own denials')
+
+  // And a call that does not carry the blocked fingerprint is still fine.
+  const other = await drive(guards, post, bash('echo hello'), okResult(), noop)
+  assert.equal(other.denial, undefined)
+})
+
+test('T34: the failure track ignores measures the operator disabled', async () => {
+  // The corpus showed the longest failure streaks sitting on the null-capped
+  // volume measures (9 on `family:http-fetch`, 8 on `verb:curl`). Counting them
+  // here would reintroduce the 0.4.0 bug through a new channel.
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, { onLimit: 'deny' })
+  const post = handlers.get('tools/post-execute')
+  const noop = async () => ({ kind: 'allow' })
+
+  // Distinct hosts: only `verb:curl` and `family:http-fetch` accumulate, and both
+  // are null-capped, so no failure advisory may ever be delivered.
+  for (let i = 1; i <= FAIL_LIMIT + 3; i += 1) {
+    const exec = bash(`curl -s "https://h${i}.example.com/p"`)
+    const { advisory } = await drive(guards, post, exec, failed(1), noop)
+    assert.equal(advisory, '', `no advisory from a disabled measure (call ${i})`)
+  }
+})
+
+test('T35: failLimit null keeps the advisory and drops the gate', async () => {
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, { onLimit: 'deny', failLimit: null })
+  const post = handlers.get('tools/post-execute')
+  const noop = async () => ({ kind: 'allow' })
+  const target = 'curl -s "https://api.does-not-exist.invalid/v1/items"'
+
+  let failureAdvices = 0
+  for (let i = 1; i <= FAIL_LIMIT + 4; i += 1) {
+    const { denial, advisory } = await drive(guards, post, bash(target), httpFailed(404), noop)
+    assert.equal(denial, undefined, `no gate when failLimit is null (call ${i})`)
+    if (isFailureAdvice(advisory)) failureAdvices += 1
+  }
+  assert.equal(failureAdvices, 1, 'the advisory still fires exactly once')
+})
+
+test('T36: failWarnAt 0 disables the advisory but not the gate', async () => {
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, { onLimit: 'deny', failWarnAt: 0 })
+  const post = handlers.get('tools/post-execute')
+  const noop = async () => ({ kind: 'allow' })
+  const target = 'curl -s "https://api.does-not-exist.invalid/v1/items"'
+
+  for (let i = 1; i <= FAIL_LIMIT; i += 1) {
+    const { denial, advisory } = await drive(guards, post, bash(target), httpFailed(404), noop)
+    assert.equal(isFailureAdvice(advisory), false, 'the failure advisory is off')
+    assert.equal(denial, undefined, `call ${i} allowed`)
+  }
+  const blocked = await drive(guards, post, bash(target), httpFailed(404), noop)
+  assert.equal(typeof blocked.denial, 'string', 'the gate is independent of the advisory')
+})
+
+test('T37: failLimit validation is fail-loud, failWarnAt follows the stage rule', () => {
+  assert.throws(() => validateCfg(mergeDefaults({ failLimit: 1 })), /failLimit/)
+  assert.throws(() => validateCfg(mergeDefaults({ failLimit: 'soon' })), /failLimit/)
+  assert.equal(validateCfg(mergeDefaults({ failLimit: null })).failLimit, null)
+  for (const value of [0, -1, null]) {
+    assert.equal(validateCfg(mergeDefaults({ failWarnAt: value })).failWarnAt, null)
+  }
+  assert.equal(validateCfg(mergeDefaults({ failWarnAt: 4 })).failWarnAt, 4)
+})

@@ -73,7 +73,7 @@ run_scenario() {
   rm -rf "$COMPAT_HOME/sessions"
   DSH_HOME="$COMPAT_HOME" MOCK_API_KEY=mock timeout 600 "$DSH_BIN" --profile probe "compat check" 2>&1 | tail -3
   COMPAT_HOME="$COMPAT_HOME" EXPECT_EXECUTED="$expected_executed" EXPECT_TOTAL="$expected_total" \
-    LABEL="$label" python3 - <<'PY'
+    LABEL="$label" EXPECT_ADVISORY="${EXPECT_ADVISORY:-}" python3 - <<'PY'
 import glob, json, os, subprocess, sys
 
 home = os.environ['COMPAT_HOME']
@@ -85,8 +85,10 @@ if not files:
     sys.exit('FAIL: no session was written')
 
 results = []
+whole_log = ''
 for path in files:
     raw = subprocess.run(['zstd', '-dc', path], capture_output=True, text=True).stdout
+    whole_log += raw
     for line in raw.splitlines():
         try:
             event = json.loads(line)
@@ -111,6 +113,15 @@ if len(executed) != expected_executed:
     sys.exit(f'FAIL: expected {expected_executed} executed attempts, saw {len(executed)}')
 if len(denied) != expected_total - expected_executed:
     sys.exit(f'FAIL: expected {expected_total - expected_executed} denied attempts, saw {len(denied)}')
+advisory = os.environ.get('EXPECT_ADVISORY', '')
+if advisory:
+    # The advisory is a plugin notice: it reaches the model as its own user-role
+    # message (`source.kind: 'plugin'`), not inside the tool result text. Search the
+    # whole log rather than the results.
+    if advisory not in whole_log:
+        sys.exit(f'FAIL: the session never carried the expected advisory {advisory!r}')
+    print(f'  -> advisory delivered: {advisory!r}')
+
 breaker = [t for _, t in denied if 'REPEAT_TOOL_BLOCKED' in t]
 if denied and not breaker:
     sys.exit('FAIL: no denied attempt carried the breaker\'s own message: '
@@ -207,4 +218,23 @@ run_scenario "pagination of one endpoint (must never block)" 8 8 \
   MOCK_REPEATS=8 MOCK_PAGE_BASE=https://api.github.invalid/repos/o/r/commits
 
 echo
+
+# Scenario 4 — the FAILURE track. The same command fails every turn; the failure
+# gate must stop it after `failLimit` consecutive failures, which is well before
+# the occurrence cap. `|| true` is deliberately NOT used: here the failure IS the
+# subject.
+FAIL_WARN=$(node --input-type=module -e "
+  const m = await import('$COMPAT_HOME/profiles/probe/node_modules/dsh-repeat-tool-breaker/lib/defaults.js')
+  process.stdout.write(String(m.DEFAULTS.failWarnAt))
+")
+FAIL_LIMIT=$(node --input-type=module -e "
+  const m = await import('$COMPAT_HOME/profiles/probe/node_modules/dsh-repeat-tool-breaker/lib/defaults.js')
+  process.stdout.write(String(m.DEFAULTS.failLimit))
+")
+echo "=== failure track: warn at $FAIL_WARN, block after $FAIL_LIMIT ==="
+EXPECT_ADVISORY="has failed $FAIL_WARN times in a row" \
+  run_scenario "consecutive failures (limit $FAIL_LIMIT)" "$FAIL_LIMIT" "$((FAIL_LIMIT + 3))" \
+  MOCK_REPEATS="$((FAIL_LIMIT + 3))" \
+  MOCK_COMMAND="curl -s --max-time 3 http://127.0.0.1:9/missing-endpoint"
+
 echo "COMPAT: PASS"

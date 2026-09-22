@@ -32,10 +32,16 @@ PAGE_BASE = os.environ.get('MOCK_PAGE_BASE', '')
 
 
 def command_for(turn: int) -> str:
+    # `|| true` on the two occurrence scenarios is deliberate: their commands
+    # cannot succeed (port 9, an `.invalid` host), and a command that fails 5 times
+    # in a row is now caught by the FAILURE track well before the occurrence cap.
+    # That is correct behaviour, but it means these scenarios would be testing the
+    # failure track instead of the one they name. The failure track has its own
+    # scenario; here the exit status is neutralised and only the fingerprints vary.
     if LOCAL_PATH:
-        return f"curl -s -w 'code-{turn}' -o /dev/null http://127.0.0.1:9{LOCAL_PATH}"
+        return f"curl -s -w 'code-{turn}' -o /dev/null http://127.0.0.1:9{LOCAL_PATH} || true"
     if PAGE_BASE:
-        return f'curl -sL "{PAGE_BASE}?per_page=100&page={turn + 1}"'
+        return f'curl -sL "{PAGE_BASE}?per_page=100&page={turn + 1}" || true'
     if PATHS:
         return "curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:9" + PATHS[turn % len(PATHS)]
     return COMMAND

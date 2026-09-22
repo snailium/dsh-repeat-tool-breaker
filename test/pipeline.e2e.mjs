@@ -219,6 +219,119 @@ async function scenario(label, config, denialFragment) {
   return ok
 }
 
+
+/**
+ * A runtime whose `bash` returns the shape the GENUINE `dsh-tool-bash` declares in
+ * its `output.schema`: `{ kind: 'foreground', exitCode, signal, timedOut }`. The
+ * failure track reads `result.value`, so a stub returning a plain string would
+ * prove nothing about it.
+ *
+ * `exitCode: 1` is deliberately NOT an `isError` — that is the distinction the
+ * whole failure track rests on, and the one a stub can get wrong.
+ * @param config - plugin config for this run.
+ * @returns `{ call }`.
+ */
+async function makeFailureRuntime(config) {
+  const ctx = new Context()
+  ctx.plugin(systemPrompt.default)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  ctx.plugin(tools.ToolRuntime)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  ctx.plugin(breaker, config)
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  ctx.tools.register(
+    tools.defineTool({
+      name: 'bash',
+      description: 'run a shell command',
+      parameters: { command: { type: 'string', required: true } },
+      // The value-schema DSL does not accept `required` (it is only for
+      // `parameters`), so the properties are declared bare.
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            kind: { type: 'string' },
+            exitCode: { type: 'integer' },
+            timedOut: { type: 'boolean' },
+          },
+        },
+        render: (_args, value) => [{ type: 'text', text: `exit ${value.exitCode}` }],
+      },
+      execute: async (args) => {
+        // Fail exactly when the command targets the endpoint that does not exist.
+        const fails = args.command.includes('does-not-exist')
+        return { kind: 'foreground', exitCode: fails ? 1 : 0, timedOut: false }
+      },
+    }),
+  )
+  let callId = 0
+  const call = (args, agent) =>
+    ctx.tools.execute({
+      callId: `call-${(callId += 1)}`,
+      name: 'bash',
+      arguments: args,
+      agent,
+      signal: new AbortController().signal,
+    })
+  return { call }
+}
+
+/**
+ * Drive the failure track through the genuine pipeline.
+ * @returns whether every invariant held.
+ */
+async function failureScenario() {
+  const { call } = await makeFailureRuntime({ onLimit: 'deny' })
+  const agent = { id: 'failing-agent' }
+  const target = 'curl -s https://api.does-not-exist.invalid/v1/items'
+  const FAIL_WARN = DEFAULTS.failWarnAt
+  const FAIL_LIMIT = DEFAULTS.failLimit
+  const observed = []
+
+  for (let i = 1; i <= FAIL_LIMIT + 1; i += 1) {
+    const result = await call({ command: target }, agent)
+    const contexts = (result.additionalContexts ?? []).map((m) => m.content[0].text)
+    observed.push({ i, isError: result.isError, denial: result.isError ? text(result) : '', contexts })
+  }
+  const at = (n) => observed[n - 1]
+
+  // A different command, after the target is blocked: the recovery action must run.
+  const recovery = await call({ command: 'grep -rn missing-endpoint /workspace' }, agent)
+
+  const warned = at(FAIL_WARN).contexts.find((c) => /has failed \d+ times in a row/.test(c))
+  const ok =
+    at(FAIL_WARN - 1).contexts.length === 0 &&
+    typeof warned === 'string' &&
+    new RegExp(`has failed ${FAIL_WARN} times in a row`).test(warned) &&
+    !/exact:bash/.test(warned) &&
+    // Every call before the limit ran (a non-zero exit is not an isError).
+    observed.slice(0, FAIL_LIMIT).every((entry) => entry.isError === false) &&
+    at(FAIL_LIMIT + 1).isError === true &&
+    /consecutive failures/.test(at(FAIL_LIMIT + 1).denial) &&
+    /REPEAT_TOOL_BLOCKED/.test(at(FAIL_LIMIT + 1).denial) &&
+    recovery.isError === false
+
+  console.log(
+    JSON.stringify(
+      {
+        scenario: 'failure track (real pipeline)',
+        failWarnAt: FAIL_WARN,
+        failLimit: FAIL_LIMIT,
+        steps: observed.map((entry) => ({
+          i: entry.i,
+          isError: entry.isError,
+          advisory: entry.contexts.length > 0 ? entry.contexts[0].split('\n')[0].slice(0, 90) : null,
+        })),
+        recoveryAllowed: recovery.isError === false,
+      },
+      null,
+      2,
+    ),
+  )
+  return ok
+}
+
 // 1. The hard break, asserted exactly.
 const denyOk = await scenario('onLimit=deny', { onLimit: 'deny' }, 'REPEAT_TOOL_BLOCKED')
 // 2. The shipped default — `onLimit: ask` with NO approver registered, which is
@@ -227,6 +340,8 @@ const denyOk = await scenario('onLimit=deny', { onLimit: 'deny' }, 'REPEAT_TOOL_
 //    that degradation is the documented behaviour, not a leak.
 const askOk = await scenario('onLimit=ask (no approver)', {}, 'about to be blocked as a repeat')
 
-const ok = denyOk && askOk
+const failureOk = await failureScenario()
+
+const ok = denyOk && askOk && failureOk
 console.log(ok ? '\nPIPELINE-E2E: PASS' : '\nPIPELINE-E2E: FAIL')
 process.exit(ok ? 0 : 1)

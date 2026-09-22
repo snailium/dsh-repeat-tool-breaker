@@ -18,3 +18,7 @@ pnpm-debug.log*
 # Local scratch used by the dev-loop smoke tests
 /tmp-*
 *.local.yml
+
+# Python bytecode from the compat harness
+__pycache__/
+*.pyc

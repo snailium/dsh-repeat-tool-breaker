@@ -12,7 +12,7 @@
  *   - undefined => leave the call allowed (a guard can never flip a denial back
  *     to allowed by ordering).
  *
- * ## Three escalating stages
+ * ## Two escalating tracks, one gate
  *
  * Repeating a MEASURE (a fingerprint identity — `exact:`, `cmd:`, `net:`,
  * `host:`, `sink:`, …) inside the same human turn escalates:
@@ -21,6 +21,17 @@
  *   2. `summarizeAt` (11)— a demand: summarise progress; list untried alternatives
  *   3. `limits` (12)     — the gate: ask the operator (`onLimit: ask`) or deny
  *                          (`host` is 16: the coarser measure needs more evidence)
+ *
+ * Failing the same measure repeatedly escalates on a SECOND, much tighter scale,
+ * because failure carries information that repetition does not:
+ *
+ *   1. `failWarnAt` (3)  — the target keeps failing; read the error, stop guessing
+ *   2. `failLimit` (5)   — the gate, subject to the same `onLimit` policy
+ *
+ * The failure track blocks only the fingerprints that hit: a call that does not carry
+ * them (reading the error log, grepping the code, another endpoint) is allowed, since
+ * blocking the recovery action wedges the model. Both tracks share the measure set, the
+ * exemptions and the refusal set — see `lib/failure.js` and `lib/window.js`.
  *
  * The three move together. `lib/defaults.js` is the ground truth for the numbers and
  * `docs/issue-b-thresholds.md` for the measurement behind them; the short version is
@@ -57,7 +68,15 @@
  */
 
 import { blockingHits, compileTracked, isTracked, fingerprints, limitFor } from './lib/fingerprints.js'
-import { askMessage, denyMessage, renderResult, summarizeMessage, warnMessage } from './lib/message.js'
+import {
+  askMessage,
+  denyMessage,
+  failWarnMessage,
+  renderResult,
+  summarizeMessage,
+  warnMessage,
+} from './lib/message.js'
+import { classifyFailure } from './lib/failure.js'
 import { createTracker, hasUserMessage } from './lib/window.js'
 import { mergeDefaults, validateCfg } from './lib/defaults.js'
 
@@ -148,6 +167,13 @@ export function apply(ctx, config = {}) {
    * that can add context).
    */
   const advisoryFor = new WeakMap()
+  /**
+   * Executions THIS plugin stopped. A denial is not the model's failure, and
+   * counting it as one would make the guard feed itself: deny a call, the streak
+   * grows, the next call is denied one step earlier. Rejected asks land here too
+   * (the call never ran), and they are recorded where the ask is settled.
+   */
+  const deniedByUs = new WeakSet()
   /** Disposers of everything this plugin registered, run by the returned teardown. */
   const teardown = []
 
@@ -159,7 +185,14 @@ export function apply(ctx, config = {}) {
    */
   const evaluate = (exec, agent) => {
     const { fps, local } = fingerprints(exec, cfg)
-    const hits = tracker.wouldExceed(agent, fps)
+    // Two tracks, one gate. The failure hits come first because they are the more
+    // actionable of the two, and both go through the same exemption/refusal path
+    // below -- a second gate would need a second ask, a second refusal set and a
+    // second way to get stuck.
+    const hits = [
+      ...tracker.failureHits(agent, fps),
+      ...tracker.wouldExceed(agent, fps).map((hit) => ({ ...hit, kind: 'repeat' })),
+    ]
     return { fps, local, hits, blocking: blockingHits(hits, tracker.exemptSet(agent)) }
   }
 
@@ -248,6 +281,7 @@ export function apply(ctx, config = {}) {
     const { fps, blocking } = evaluate(exec, agent)
 
     if (blocking.length > 0) {
+      deniedByUs.add(exec)
       tracker.commit(agent, fps, blocking)
       return denyMessage({
         name,
@@ -280,19 +314,44 @@ export function apply(ctx, config = {}) {
   // instead of replacing it.
   const onPost = ctx.on('tools/post-execute', async (exec, result, next) => {
     const { name, agent } = parts(exec)
-    if (agent !== null) {
+    let failureAdvisory
+    if (agent !== null && tracked(name)) {
       const pending = pendingAsk.get(exec)
       if (pending !== undefined) {
         // A rejected ask never reached the guard, so a surviving entry means the
         // operator declined: spend the budget anyway, so the next identical call
         // is denied outright instead of re-asking, and remember the refusal.
+        // The call did not run, so it is not a failure either.
+        deniedByUs.add(exec)
         pendingAsk.delete(exec)
         tracker.refuseFingerprints(
           agent,
           pending.hits.map((hit) => hit.fp),
         )
         tracker.commit(agent, pending.fps, pending.hits)
-      } else if (tracked(name) && result?.isError !== true) {
+      } else if (!deniedByUs.has(exec)) {
+        // The failure track is settled HERE and only here: the outcome is not known
+        // before the call runs, which is also why the gate for it can only ever
+        // fire on a LATER call.
+        const { fps } = fingerprints(exec, cfg)
+        const failure = classifyFailure(result)
+        const warned = tracker.noteOutcome(agent, fps, failure)
+        if (warned.length > 0) {
+          // Name the longest streak. A tie is broken by `measureRank` for the same
+          // reason the occurrence stages do it: identical calls cross `exact:`,
+          // `cmd:`, `net:` and `host:` together, and naming `exact:` quotes a
+          // truncated command line instead of the target the model can act on.
+          const top = warned.reduce((best, entry) =>
+            entry.streak > best.streak ||
+            (entry.streak === best.streak && measureRank(entry.fp) < measureRank(best.fp))
+              ? entry
+              : best,
+          )
+          failureAdvisory = noticeMessage(
+            failWarnMessage(top.fp, top.streak, failure, cfg),
+            `${top.fp} failed x${top.streak}`,
+          )
+        }
         const text = renderResult(result)
         if (text) tracker.slot(agent).lastResult = text.slice(0, cfg.resultPreviewChars)
       }
@@ -301,9 +360,13 @@ export function apply(ctx, config = {}) {
     const downstream = await next()
     const advisory = advisoryFor.get(exec)
     advisoryFor.delete(exec)
-    if (advisory === undefined) return downstream
+    // At most one message per track. Both may fire on the same call -- a repeated
+    // call that also failed -- and the failure one goes first because it is the
+    // more actionable of the two.
+    const owed = [failureAdvisory, advisory].filter((entry) => entry !== undefined)
+    if (owed.length === 0) return downstream
     const existing = Array.isArray(downstream?.additionalContexts) ? downstream.additionalContexts : []
-    return { ...downstream, additionalContexts: [advisory, ...existing] }
+    return { ...downstream, additionalContexts: [...owed, ...existing] }
   })
   teardown.push(onPost)
 

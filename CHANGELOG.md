@@ -5,6 +5,58 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-22
+
+### Added
+
+- **A second escalation track, on consecutive FAILURES of one fingerprint.** The
+  occurrence track is unchanged (7 / 11 / 12, `host` 16). The new track exists because
+  failure is a much stronger signal than repetition: repeating a call that WORKS is
+  fixation, repeating one that FAILS is not learning. Its thresholds therefore sit well
+  below the occurrence ones.
+
+  | setting | default | what it does |
+  | --- | --- | --- |
+  | `failWarnAt` | 3 | after 3 consecutive failures of one fingerprint, deliver an advisory naming the target and the failure reason |
+  | `failLimit` | 5 | after 5, a call carrying that fingerprint is blocked, subject to the existing `onLimit` policy (`ask`, fail-closed) |
+
+- **A failure is not `result.isError`.** `isError` is true only when the CALL failed — a
+  thrown error, an unknown tool, a sandbox denial — and is `false` for a non-zero exit
+  code and for an HTTP 404, which are the two shapes that matter. Measured over 40
+  recorded sessions, the thrown case covers 40 of 6765 bash results (0.6%); counting only
+  it would have made the track blind. `lib/failure.js` reads the structured
+  `result.value` each tool declares in its `output.schema` — non-zero `exitCode`,
+  `statusCode >= 400`, `timedOut`, non-null `signal` — with a text-marker fallback.
+
+### Notes
+
+- **Only the fingerprints that hit are blocked.** A call that does not carry them —
+  reading the error log, grepping the code, trying a different endpoint — is allowed.
+  Blocking the recovery action is how a guard turns a stuck model into a wedged one.
+- **A success clears that fingerprint's streak; a success of something else does not.**
+  A read is not progress on the thing that keeps failing.
+- **Both tracks share one measure set.** A fingerprint whose cap is `null` is disabled
+  for both. This is load-bearing: measured over the corpus, the longest failure streaks
+  sat on exactly those measures (9 on `family:http-fetch`, 8 on `verb:curl`, 7 on
+  `verb:export`), so counting them would have reintroduced the 0.4.0 bug through a new
+  channel.
+- **The plugin never counts its own denial as a failure**, which would make the guard
+  feed itself: deny a call, the streak grows, the next call is denied a step earlier.
+- **The failure gate can only fire on a later call.** `ctx.tools.guard` is synchronous
+  and runs before execution; the outcome is known only in `post-execute`. So after 5
+  failures, the 6th call carrying that fingerprint is blocked.
+- Both tracks feed the SAME gate, the same exemption prompt and the same refusal set. A
+  second gate would have needed a second ask, a second refusal set and a second way to
+  get stuck.
+- Measured support (`tools/failure-run-measurement.mjs`, 107 sessions, enabled measures
+  only): 3.6% of calls fail; 9 sessions reach a 3-failure streak, 5 reach 5, and **zero
+  known-good runs reach 3**. The clearest real case was a session hitting
+  `host:api.github.invalid` — a reserved, permanently nonexistent host — 8 times running.
+- The compat suite gained a failure scenario, and its two occurrence scenarios now
+  neutralise the exit status (`|| true`). Their commands cannot succeed, so without that
+  they would have been testing the failure track instead of the one they name.
+
+
 ## [0.4.2] - 2026-09-22
 
 ### Changed
@@ -519,7 +571,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.3...v0.4.0

@@ -17,7 +17,13 @@ denies, the call never executes and the model gets an `isError` result starting
 with `REPEAT_TOOL_BLOCKED` that quotes the previous result and says what to do
 instead.
 
-In one paragraph, the v1 → v2 → 0.4.x story:
+Since 0.5.0 a second track watches the same fingerprints for **consecutive
+failures** rather than occurrences: an advisory at 3, and the same gate at 5.
+Both tracks share one gate, one measure set and one exemption policy. Numbers in
+this README belong to the occurrence track unless they are labelled `failWarnAt`
+or `failLimit`.
+
+In one paragraph, the v1 → v2 → 0.5.0 story:
 
 > **v1 lost** because it counted *byte-identical consecutive* calls while the
 > model varied a presentation field (`description: '1st'|'2nd'|'3rd'`, churning
@@ -31,6 +37,9 @@ In one paragraph, the v1 → v2 → 0.4.x story:
 > **0.4.0 adds escalation**: the same measure warns, demands a summary, and only
 > then gates — retuned in 0.4.2 to 7 / 11 / 12, with `host:` at 16 — and the gate
 > asks the operator rather than blocking silently.
+> **0.5.0 adds the failure track**: the same fingerprints are counted for
+> *consecutive failures* too — advisory at 3, gate at 5 — because repeating a call
+> that works is fixation, while repeating one that fails is not learning.
 
 ## The three loops, and what catches each
 
@@ -47,29 +56,37 @@ differs so `net:` never collides. On the reference deployment one agent made 30
 `host:` measure (new in 0.4.0, cap 16) is what makes it visible; see
 [How a call is fingerprinted](#how-a-call-is-fingerprinted).
 
+The failure track (0.5.0) is a different axis from all of these: it fires on a
+fingerprint that keeps **failing**, even when the number of attempts is far too
+low to reach the occurrence stages — a model guessing at an endpoint that does
+not exist, getting a 404, and rephrasing the request. See
+[The failure track](#the-failure-track-two-stages).
+
 The sibling official plugin `@deepseek-ai/dsh-repeat-tool-reminder` (advisory, at
 3/5/8 repeats) may stay on — the two compose, with the reminder as the soft nudge
 and this breaker as the escalating gate that asks at 12.
 
-## The three stages
+## The occurrence track: three stages
 
-Every measure — one fingerprint identity such as `exact:<tool>:…`,
-`net:<host><path>?<query>`, or `host:<host>` — has the same three-stage
-structure. A stage fires **once per crossing, on exact equality**: the count
-*including* the current call must equal the threshold, so the window sliding does
-not re-announce it.
+The occurrence track counts *repeats*. Every measure — one fingerprint identity
+such as `exact:<tool>:…`, `net:<host><path>?<query>`, or `host:<host>` — has the
+same three-stage structure. A stage fires **once per crossing, on exact
+equality**: the count *including* the current call must equal the threshold, so
+the window sliding does not re-announce it. The
+[failure track](#the-failure-track-two-stages) below has its own two stages.
 
-| Count | Setting | Stage | What happens |
+| Repeats | Setting | Stage | What happens |
 |---|---|---|---|
 | 7 | `warnAt` | 1 — light warning | The model is told it is repeating and should consider whether a different route would get there faster. Nothing is blocked and nothing is demanded. |
 | 11 | `summarizeAt` | 2 — summary demand | The model must write down what it established, what it assumed without verifying, what failed and why, and **at least two approaches it has not tried** — plus an instruction to use a **larger per-batch amount** so there are fewer batches. Nothing is blocked. |
 | 12 | the `limits` entry | 3 — the gate | `onLimit: ask` (default) offers the operator a turn-scoped exemption; `onLimit: deny` blocks outright. An unattended ask degrades to a denial. |
 
-The cap is 12 for the action-identity measures (`exact`, `cmd`, `net`, `sink`) and 16
-for the coarser `host:` measure — the whole window. See
-[Tuning](#tuning-and-how-these-numbers-were-chosen).
+The occurrence cap is 12 for the action-identity measures (`exact`, `cmd`, `net`,
+`sink`) and 16 for the coarser `host:` measure — the whole window. See
+[Tuning](#tuning-and-how-these-numbers-were-chosen). The failure track's gate is
+`failLimit`, a separate setting, at 5.
 
-`limits` **is** the stage-3 threshold. There is deliberately no separate
+`limits` **is** the occurrence stage-3 threshold. There is deliberately no separate
 `gateAt`: a second gate number would be the same value written twice, and two
 knobs that must agree will eventually disagree.
 
@@ -119,6 +136,107 @@ own and nothing stalls. Exemptions are **per fingerprint**: an exemption for
 
 Asking used to be local-only (`localHosts: ask`). Since 0.4.0 it is what
 `onLimit` does for every measure; see [Local addresses](#local-addresses).
+
+`onLimit` governs **both** tracks. A failure hit and a repeat hit go through the
+same exemption prompt and the same refusal set, so approving exempts exactly the
+fingerprints that hit whichever track flagged them. A second gate would have
+needed a second ask, a second refusal set and a second way to get stuck.
+
+## The failure track: two stages
+
+New in 0.5.0. A second escalation track watches the same fingerprints for
+**consecutive failures** instead of occurrences. It exists because failure is a
+much stronger signal than repetition: repeating a call that *works* is fixation,
+repeating one that *fails* is not learning. Its thresholds therefore sit well
+below the occurrence ones (7 / 11 / 12).
+
+| Consecutive failures | Setting | Stage | What happens |
+|---|---|---|---|
+| 3 | `failWarnAt` | 1 — failure advisory | The model is told the target has failed three times in a row, with the failure reason quoted, and is pointed at the error, at whether the target exists, and at the cause. Nothing is blocked. |
+| 5 | `failLimit` | 2 — the gate | A call carrying that fingerprint is blocked, through the **same** `onLimit` policy as the occurrence gate — `ask` by default (fail-closed), `deny` for a hard break. |
+
+The motivating case is a model guessing at an endpoint that does not exist: it
+keeps getting a 404 and rephrasing the request. The failure is the signal, and it
+is available long before repetition counting would notice.
+
+### What counts as a failure
+
+A failure is **not** `result.isError`. That flag is true only when the *call*
+failed — a thrown error, an unknown tool, a sandbox denial, an abort — and it is
+`false` for the two shapes that matter most: a non-zero exit code and an HTTP
+error status. Measured over 40 recorded sessions, the thrown case covered 40 of
+6765 `bash` results (0.6%), so counting only it would make the track blind.
+
+`lib/failure.js` reads the structured `result.value` each tool declares in its
+`output.schema`, structured first:
+
+- a non-zero `exitCode` (bash);
+- `statusCode >= 400` (web fetch);
+- `timedOut`;
+- a non-null `signal`;
+- a sandbox denial.
+
+A text-marker fallback (`[exit code: N]`, `(HTTP nnn)`, `[timed out after Nms]`,
+`[killed by signal: …]`, `[sandbox: file access denied`) covers a tool that
+declares nothing useful. Two things are deliberately **not** failures: `aborted`
+— a cancellation is external to the model's choice — and a background job that
+started (`kind: 'background'`, whose exit code belongs to a later call).
+
+### Only the fingerprint that hit is blocked
+
+A call is blocked only when it *carries* a fingerprint that has already failed
+`failLimit` times in a row. A call that does not carry it — reading the error
+log, grepping the code, trying a different endpoint — is allowed. Blocking the
+recovery action is how a guard turns a stuck model into a wedged one.
+
+### A success clears that fingerprint's streak
+
+A success of the failing fingerprint clears its streak. A success of a
+*different* fingerprint does not: a model that fails a build, reads a file, and
+fails the build again has failed the build twice, and the read is not progress on
+the build.
+
+### The two tracks share one measure set
+
+A fingerprint whose `limits` cap is `null` is disabled for **both** tracks. This
+is load-bearing rather than tidy: measured over the corpus, the longest failure
+streaks sat on exactly those disabled measures (9 on `family:http-fetch`, 8 on
+`verb:curl`, 7 on `verb:export`), so counting them would have reintroduced the
+0.4.0 bug through a new channel. The failure track also skips exempted
+fingerprints, exactly as the occurrence track does.
+
+### The failure gate can only fire on a later call
+
+`ctx.tools.guard` is synchronous and runs *before* execution, while the outcome
+is known only in `tools/post-execute`. The failure gate therefore cannot stop the
+call that produces the fifth failure: after 5 failures, the **6th** call carrying
+that fingerprint is blocked.
+
+### The plugin never counts its own denial
+
+`REPEAT_TOOL_BLOCKED` is not the model's failure. A denial this plugin issued is
+excluded from the streak — otherwise the guard would feed itself: deny a call,
+the streak grows, and the next call is denied one step earlier. A declined ask is
+excluded too, because that call never ran.
+
+### Naming the measure, and the off-switches
+
+When several fingerprints cross the failure stage together, the advisory names
+the most actionable one, using the same `measureRank` tie-break as the occurrence
+stages — a target-scoped measure such as `host:`, never a truncated `exact:`
+command line.
+
+`failWarnAt` follows the same on/off rule as `warnAt`: a positive integer enables
+it, and `0`, a negative number or `null` disables it silently. `failLimit: null`
+disables the gate while keeping the advisory. The two are independent of each
+other and of the occurrence settings; as everywhere else in this plugin, nothing
+is validated against anything.
+
+Measured support (`tools/failure-run-measurement.mjs`, over 107 recorded
+sessions, counting only enabled measures): 3.6% of calls fail; 9 sessions reach a
+3-failure streak and 5 reach 5, while **zero known-good runs reach 3**. The
+clearest real case was a session hitting `host:api.github.invalid` — a reserved,
+permanently nonexistent host — 8 times in a row.
 
 ## Requirements
 
@@ -211,7 +329,8 @@ re-allowed by listener ordering, and — critically — **the tool body never ru
 That is what distinguishes the gate from the official reminder, which only injects
 a softer "you repeated X" message after the call already executed. Since 0.4.0 the
 breaker also has its own two advisory stages, delivered on the same
-`tools/post-execute` channel (see [The three stages](#the-three-stages)).
+`tools/post-execute` channel (see [The occurrence track](#the-occurrence-track-three-stages)),
+and since 0.5.0 the failure advisory rides it too.
 
 The guard is deliberately synchronous: no `await`, no DNS, no disk reads.
 
@@ -293,7 +412,11 @@ all.
 - An approved **exemption stops counting**, not merely blocking: the exempted
   fingerprints are dropped at commit time, so they are not incremented and cannot
   escalate again for the rest of the turn. An exemption is per fingerprint and
-  says nothing about any other measure.
+  says nothing about any other measure. It applies to both tracks: an exempted
+  fingerprint is not counted for the failure streak either.
+- The failure track keeps its own per-fingerprint `failStreak`, separate from the
+  window (see [The failure track](#the-failure-track-two-stages)). A real user
+  message clears it along with the window, the exemptions and the refusals.
 - A real **user message** (`agent/pre-step` with source `kind: 'user'`) clears that
   agent's window — and with it the exemptions and the refusals. Plugin notices and
   tool results do **not** — otherwise the breaker's own denial would reset the
@@ -315,10 +438,12 @@ at which point `ctx.tools.guard` is the genuine method.
       name: dsh-repeat-tool-breaker
       config:
         window: 16                  # recent calls per agent that participate
-        onLimit: ask                # ask | deny — what happens AT `limits`
+        onLimit: ask                # ask | deny — what happens at either gate
         localHosts: deny            # deny | allow — see "Local addresses"
-        warnAt: 7                   # stage 1; 0 / negative / null disables it
-        summarizeAt: 11             # stage 2; 0 / negative / null disables it
+        warnAt: 7                   # occurrence stage 1; 0 / negative / null disables it
+        summarizeAt: 11             # occurrence stage 2; 0 / negative / null disables it
+        failWarnAt: 3               # failure stage 1; same off-switch as `warnAt`
+        failLimit: 5                # failure gate; null disables it, keeps the advisory
         includeLocal: false         # whether local hosts feed the `host:` measure
         previewChars: 400           # truncation for quoted fingerprints
         resultPreviewChars: 800     # truncation for the quoted previous result
@@ -329,8 +454,8 @@ at which point `ctx.tools.guard` is the genuine method.
           bash: [description, timeoutMs, run_in_background, justification]
         hostAliases:                # merged over the defaults
           open-data.canada.ca: open.canada.ca
-        limits:                     # merged over the defaults; null = uncapped
-          # `limits` IS the stage-3 threshold — there is no `gateAt`.
+        limits:                     # merged over the defaults; null disables BOTH tracks
+          # `limits` IS the occurrence stage-3 threshold — there is no `gateAt`.
           exact: 12
           cmd: 12
           net: 12
@@ -356,10 +481,13 @@ Merge semantics, which matter when retuning:
 Every value is validated fail-loud in `apply`: `window >= 4`; `onLimit` one of
 `ask`/`deny`; `localHosts` one of `deny`/`allow`; `includeLocal` a boolean; every
 limit either `null` or a finite number `>= 2` (a cap below 2 would deny the
-*first* call); `previewChars`/`resultPreviewChars` `>= 1`; and an enabled stage a
-positive integer. **No setting is checked against another** — inverted stages
-simply fire in the other order and a `limits` entry below a stage means "no
-escalation for this measure", both legitimate ways to express intent. Config keys
+*first* call); `failLimit` either `null` or a finite number `>= 2`;
+`previewChars`/`resultPreviewChars` `>= 1`; and an enabled stage — `warnAt`,
+`summarizeAt` or `failWarnAt` — a positive integer. **No setting is checked
+against another** — inverted stages simply fire in the other order, a `limits`
+entry below a stage means "no escalation for this measure", and the two failure
+settings are independent of each other and of the occurrence settings; all are
+legitimate ways to express intent. Config keys
 removed in 0.2.0 (`denyAfter`, `warnAfter`, `registerAdvisory`, `maxSamePath`,
 `readTools`, `matchReadBySubstring`) throw with a pointer at their replacement
 rather than being ignored, and `localHosts: ask` (removed in 0.4.0) throws with
@@ -371,6 +499,10 @@ a reconfig of an already-present id and fails with "entry not found" for a plugi
 that isn't yet in the composed tree.)
 
 ### Tuning, and how these numbers were chosen
+
+Every number in this subsection belongs to the **occurrence track**. The failure
+track's 3 / 5 are justified separately in
+[The failure track](#the-failure-track-two-stages).
 
 The table mixes *precise* caps with *broad* ones, and the difference matters:
 
@@ -506,7 +638,7 @@ Two things worth knowing:
 npm test          # node --test test/breaker.test.js
 ```
 
-50 tests, no model or endpoint required. The suite mirrors the v2 spec's table
+58 tests, no model or endpoint required. The suite mirrors the v2 spec's table
 (T1 ping-pong, T2/T3 description decoys, T4 unrelated calls, T5 curl↔wget, T6
 exclusion, T7 per-agent isolation, T8 volatile flags, T9 normalizer units, T10
 read paths, T11 denied calls still spend budget), adds the plugin-level wiring
@@ -516,11 +648,12 @@ shipped defaults (T14: the 0.4.2 table; T14b/T14c: volume is not a loop signal,
 `?page=N` stays a new resource while `host:` is the convergence measure that
 accumulates across pages).
 
-The 0.4.0 escalation has its own tests:
+The 0.4.0 occurrence escalation has its own tests:
 
-- `T24` — the three stages fire at `warnAt`, `summarizeAt` and the cap on one
-  measure, with the assertions derived from the defaults rather than hard-coded
-  (7, 11 and 12), and once per crossing rather than on every later call;
+- `T24` — the three occurrence stages fire at `warnAt`, `summarizeAt` and the cap
+  on one measure, with the assertions derived from the defaults rather than
+  hard-coded (7, 11 and 12), and once per crossing rather than on every later
+  call;
 - `T25` — `host:` accumulates on a public host across distinct paths and queries,
   while local hosts are excluded from it by default;
 - `T26` — an exemption covers only the measures that hit;
@@ -531,6 +664,25 @@ The 0.4.0 escalation has its own tests:
   and the window;
 - `T14d`–`T14f` — the silent stage off-switch, no cross-setting validation, and
   the `localHosts: ask` migration error.
+
+The 0.5.0 failure track has its own tests, all asserting that `isError` is not
+the failure test:
+
+- `T30` — consecutive failures of one fingerprint warn at `failWarnAt`, quoting
+  the failure reason and never the `exact:` command line, while the occurrence
+  stage at 7 has not fired;
+- `T31` — the gate blocks the failing target but not the recovery call (a grep)
+  and not a different target;
+- `T32` — a success of the failing fingerprint clears the streak, while a success
+  of a different fingerprint does not;
+- `T33` — the plugin's own denial is never counted as a failure, so feeding the
+  gate its own denials does not grow the streak;
+- `T34` — a `null`-capped measure is invisible to the failure track;
+- `T35` — `failLimit: null` drops the gate and keeps the advisory, which still
+  fires exactly once;
+- `T36` — `failWarnAt: 0` disables the advisory but not the gate;
+- `T37` — `failLimit` validation is fail-loud and `failWarnAt` follows the same
+  silent off-switch as `warnAt`.
 
 Assertions worth singling out, because they are the ones that would have caught
 v1 — or that caught v2's own defaults:
@@ -572,7 +724,10 @@ still collide, and the break lands at 12 with the two advisory stages before it.
 
 `test/pipeline.e2e.mjs` drives the genuine `ToolRuntime` with a stub `bash` body,
 which proves the denied call's body is never entered — offline and deterministically.
-It needs the dsh packages resolvable, so it is not part of CI:
+It covers both tracks: the occurrence gate, and (since 0.5.0) a failure scenario
+where the same command fails every call, so the stub returns a structured
+`exitCode` the failure classifier can read. It needs the dsh packages resolvable,
+so it is not part of CI:
 
 ```bash
 DSH_NODE_MODULES=/path/to/dsh/node_modules/@deepseek-ai npm run test:pipeline
@@ -588,6 +743,10 @@ shipped cap out of the plugin's own `DEFAULTS` (so a retune does not break the
 harness) and asserts the resulting tool-result trajectory. It also covers a
 local-address loop with no answerer, where the fail-closed `onLimit: ask` must
 deny rather than stall, and pagination of one endpoint, which must never block.
+Since 0.5.0 it also drives the failure track — the same command failing every
+turn, stopped after `failLimit` consecutive failures, which lands well before the
+occurrence cap — and the two occurrence scenarios neutralise their exit status
+(`|| true`) so that they test the track they name.
 
 ```bash
 DSH_PREFIX=/tmp/dsh-compat
@@ -661,11 +820,12 @@ the npm CLI explicitly because Node 22 bundles an older one.
 
 **Verified**
 
-- **Deterministic suite** (`npm test`) — 50 tests covering the full fingerprint
-  matrix, decoy stripping, host folding, sink extraction, the `host:` measure and
-  the three escalating stages, window arithmetic, per-agent isolation, the
-  user-message reset, the gate's ask/deny outcomes, and the fail-loud config
-  contract. Runs in CI on Node 20 and 22 with no model or endpoint.
+- **Deterministic suite** (`npm test`) — 58 tests covering the full fingerprint
+  matrix, decoy stripping, host folding, sink extraction, the `host:` measure, the
+  three occurrence stages, the two failure stages, window arithmetic, per-agent
+  isolation, the user-message reset, the gate's ask/deny outcomes, and the
+  fail-loud config contract. Runs in CI on Node 20 and 22 with no model or
+  endpoint.
 - **Loads and applies on a real DSH boot**, including as a profile bundle (the
   `dsh.bundle` layer mounts the row by package specifier). Verified on
   `@deepseek-ai/dsh` **0.1.2-rc.1** (the reference deployment) and
@@ -704,6 +864,15 @@ the npm CLI explicitly because Node 22 bundles an older one.
   and the "denied call charges a resource it never fetched" hole.
 - **Windows, not consecutive runs.** v1's run counter reset as soon as a different
   signature arrived, which is exactly the `A, B, A, B` pattern class C exploited.
+  The failure track is the one place a consecutive run *is* the signal, and it is
+  scoped to one fingerprint rather than to every call in a row.
+- **Two tracks, one gate.** The occurrence and failure tracks are computed
+  separately but merged into a single hit list before the exemption and refusal
+  logic runs, so there is one ask, one refusal set and one way to get stuck. The
+  failure hit is checked first because it is the more actionable of the two.
+- **The failure track reuses the occurrence measure set**, including the
+  `null`-cap off-switch, so a measure disabled for repetition cannot leak back in
+  through the failure channel.
 - **Fail loud in `apply`**: no schemastery `Config` export (keeping the plugin
   dependency-free is deliberate — `cordis.resolveConfig` passes config through
   unchanged when a plugin exports no `Config`), but every load-bearing invariant
@@ -713,10 +882,13 @@ the npm CLI explicitly because Node 22 bundles an older one.
   description / `timeoutMs` / `--max-time` / host spelling is not a new action,
   and quotes the previous result inline (or says the previous result is already
   in the history). It contains no `<tool_call>`-shaped markup.
-- **Escalation is advisory first.** Stages 1 and 2 ride `tools/post-execute`
+- **Escalation is advisory first.** Every advisory stage — occurrence 1 and 2,
+  and the failure track's stage 1 — rides `tools/post-execute`
   `additionalContexts` stamped `source.kind: 'plugin'`, because a guard can only
   return a denial — and an unlabeled context would render as a user prompt in
-  derived history. The gate itself is split across two hooks: `tools/pre-execute`
+  derived history. At most one message per track is delivered on a call, and the
+  failure one goes first when both fire. The gate itself is split across two
+  hooks: `tools/pre-execute`
   can ask but cannot deny, and `ctx.tools.guard` can deny but cannot ask. A
   rejected ask never reaches the guard, so "the guard saw this execution" is
   exactly the approval signal.

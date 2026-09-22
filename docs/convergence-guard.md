@@ -25,7 +25,7 @@ Observed case: an agent computing a snowfall total found `api.weather.gc.ca`, th
 ~60 minutes without an answer. Its own compaction summary named the alternative it should
 have tried; it did not try it.
 
-## 2. The mechanism: three escalating stages
+## 2. The mechanism: two escalating tracks
 
 One window (the existing **16-call, same-turn** window), one policy per **measure**:
 
@@ -130,6 +130,87 @@ Three findings drove it, and the third is a constraint rather than a preference:
 Measured over the 109 non-stuck sessions, the change takes advisory messages from 629 to
 158, warned sessions from 49 to 26, gated sessions from 19 to 10, and blocked calls from
 2296 to 1595 — while still catching the known-stuck run.
+
+## 2.5 The failure track (0.5.0)
+
+A second escalation track counts **consecutive failures of one measure** instead of
+occurrences, on its own two settings:
+
+| Count of consecutive failures of one measure | Stage | Action |
+| --- | --- | --- |
+| **3** (`failWarnAt`) | 1 | **Friendly advisory.** Name the target and the failure reason; ask the model to read the error, check the target exists, and fix the cause instead of re-running. |
+| **5** (`failLimit`) | 2 | **Gate**, subject to the same `onLimit` policy as the occurrence gate. |
+
+### Why a second track rather than moving the first one's thresholds
+
+The occurrence track cannot distinguish the two workloads that produce repetition:
+
+- **fixation on something that works** — an agent re-querying a working endpoint with
+  slightly different parameters, which is normal multi-step work and sometimes succeeds;
+- **guessing at something that does not** — an agent rephrasing a request against an
+  endpoint that keeps returning 404.
+
+The measured corpus showed both, and the ambiguity is why the occurrence thresholds had
+to be raised to 7 / 11 / 12 in 0.4.2: the tighter values could not be justified against a
+*successful* run that legitimately repeated a target six times. Failure removes the
+ambiguity, so its thresholds can be much tighter — and the two tracks coexist rather than
+one replacing the other.
+
+### `isError` is not a failure
+
+This is the trap the whole feature rests on. `result.isError` is true only when the CALL
+failed — thrown, unknown tool, sandbox denial, abort. It is `false` for a non-zero exit
+code and `false` for an HTTP 404. Measured over 40 recorded sessions, the thrown case
+covers 40 of 6765 bash results, **0.6%**; a track built on it would be blind.
+
+The reliable channel is the structured `result.value`, which every tool declares in its
+`output.schema`:
+
+| tool | structured value | failure condition |
+| --- | --- | --- |
+| `bash` | `{ kind, exitCode, signal, timedOut, aborted, … }` | `exitCode !== 0`, `timedOut`, non-null `signal` |
+| web fetch | `{ url, statusCode, truncated, … }` | `statusCode >= 400` |
+
+`lib/failure.js` reads those first and falls back to the text markers the renderers emit
+(`[exit code: N]`, `(HTTP nnn)`, `[timed out after Nms]`, `[killed by signal: X]`,
+`[sandbox: file access denied…]`). Two things are deliberately NOT failures: `aborted`
+(external to the model's choice) and a background job that started.
+
+### The rules that keep it safe
+
+- **Only the fingerprints that hit are blocked.** A call that does not carry them —
+  reading the error log, grepping the code, trying another endpoint — is allowed.
+  Blocking the recovery action is how a guard turns a stuck model into a wedged one.
+- **A success clears that fingerprint's streak.** A success of a DIFFERENT fingerprint
+  does not: a read is not progress on the thing that keeps failing.
+- **The measure set is shared.** A `null`-capped measure is disabled for both tracks.
+  This is load-bearing rather than tidy: on the corpus the longest failure streaks sat on
+  exactly the disabled volume measures — 9 on `family:http-fetch`, 8 on `verb:curl`, 7 on
+  `verb:export` — so a failure track with its own measure set would have reintroduced the
+  0.4.0 bug through a new channel.
+- **The plugin never counts its own denial as a failure.** Doing so would make the guard
+  feed itself: deny a call, the streak grows, the next call is denied a step earlier.
+- **The gate can only fire on a later call.** `ctx.tools.guard` is synchronous and runs
+  before execution; the outcome is known only in `post-execute`. After 5 failures, the 6th
+  call carrying that fingerprint is blocked.
+- **The tie-break is shared.** When several measures cross together the message names the
+  most actionable one by `measureRank`, never a truncated `exact:` command line.
+
+### Measured support
+
+`tools/failure-run-measurement.mjs`, 107 recorded sessions, enabled measures only:
+
+| longest failure streak | ≥2 | ≥3 | ≥4 | ≥5 | ≥8 |
+| --- | --- | --- | --- | --- | --- |
+| sessions | 17 | **9** | 6 | **5** | 4 |
+| of the known-good runs | — | **0** | — | **0** | — |
+
+The failure rate is 3.6% of calls. The clearest real case was a session hitting
+`host:api.github.invalid` — a reserved, permanently nonexistent host — 8 times in a row;
+the weather-API fixation shows up as 9 on one `net:`. The corpus contains only 12
+`http:404` events, so the direct evidence for the 404 shape specifically is thin: the
+dominant real failures are non-zero bash exits (269 `exit:1`) and thrown filesystem errors
+(164 `FsError`).
 
 ## 3. The measure set: **A — all capped measures, uniformly**
 
@@ -241,9 +322,11 @@ later "completes" one with an invented number.
 ```yaml
 - id: repeat-tool-breaker
   config:
-    warnAt: 7             # stage 1; 0 or negative (or null) disables it silently
-    summarizeAt: 11       # stage 2; 0 or negative (or null) disables it silently
-    onLimit: ask          # what happens AT `limits` — ask (unattended -> deny) | deny
+    warnAt: 7             # occurrence stage 1; 0 or negative (or null) disables it silently
+    summarizeAt: 11       # occurrence stage 2; 0 or negative (or null) disables it silently
+    failWarnAt: 3         # FAILURE track stage 1 (0.5.0); same on/off rule
+    failLimit: 5          # FAILURE track gate (0.5.0); null keeps the advisory, drops the gate
+    onLimit: ask          # what happens AT either gate — ask (unattended -> deny) | deny
     localHosts: deny      # allow | deny  (the `ask` value is removed; see §6)
     includeLocal: false   # NEW: whether local hosts count toward the host measure
     window: 16            # the whole scale is clamped by this
@@ -301,9 +384,15 @@ stages are advisory, rather than an automatic volume cap).
 ## 9. Test plan
 
 - Unit: counting eligibility (denied calls excluded, multi-URL calls credited per
-  measure, local hosts excluded when configured); the stages fire at exactly 3, 6 and 9;
-  an exemption stops counting only its own measure; the `warnAt < summarizeAt < cap`
-  validation.
+  measure, local hosts excluded when configured); the occurrence stages fire at exactly
+  `warnAt`, `summarizeAt` and the cap (7 / 11 / 12 since 0.4.2); an exemption stops
+  counting only its own measure.
+- Unit, failure track (T30-T37): the advisory fires once at `failWarnAt` on a
+  non-`isError` failure (`exitCode: 1`); the gate blocks the failing fingerprint while a
+  recovery call and a different target pass; a success clears the streak but a success of
+  another fingerprint does not; the plugin never counts its own denial; disabled measures
+  never join the track; `failLimit: null` and `failWarnAt: 0` are independent switches;
+  and `failLimit` is validated fail-loud.
 - Fixture: the failing sessions replay to a peak of 18 on one host and reach all three
   stages.
 - Regression: existing `exact`/`cmd`/`net`/`sink` behaviour is unchanged when the
@@ -311,7 +400,15 @@ stages are advisory, rather than an automatic volume cap).
   `omitIgnored` value) holds.
 - Composition: the injected `additionalContexts` messages are not swallowed by
   `dsh-command-context-trim`, and they compose with a downstream block.
-- Real boot: the compat harness in an isolated `DSH_HOME` (see `no-production-dsh`).
+- Real pipeline: `test/pipeline.e2e.mjs` drives the genuine `dsh-tools` ToolRuntime, with
+  a stub whose `bash` returns the structured `{ kind, exitCode, timedOut }` the real tool
+  declares — a stub returning a plain string would prove nothing about the failure track.
+  It asserts the advisory at 3, the denial at 6, and that the recovery call runs.
+- Real boot: the compat harness in an isolated `DSH_HOME` (see `no-production-dsh`),
+  including a scenario that fails the same command every turn and asserts the trajectory
+  executed ×5, `ask`-with-no-answerer denied, then hard-denied. Its two occurrence
+  scenarios neutralise the exit status (`|| true`), because their commands cannot succeed
+  and they would otherwise be testing the failure track instead of the one they name.
 
 ## 10. Measurement results
 
