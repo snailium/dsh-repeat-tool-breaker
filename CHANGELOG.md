@@ -5,6 +5,36 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-22
+
+### Fixed
+
+- **The failure track was blind to the shapes a real spin produces.** Reported from a live
+  run: seven calls against one host, five of them failing, and `failWarnAt: 3` never fired.
+  Every one of those five had `isError: false` **and exit code 0** — `curl … | python3 … |
+  head` exits with `head`'s status, and a script that catches its own `HTTP Error 400` exits
+  0 as well — so the structured value said "success" and the text fallback did not recognise
+  what was in the text.
+
+  `lib/failure.js` now also recognises, in a shell result's text: `Traceback (most recent
+  call last)`, a line-anchored Python exception (`SyntaxError:`, `urllib.error.URLError:`, …),
+  `HTTP Error nnn`, and `curl: (n)`. On the reported run the failure streak is now 4 on
+  `host:archive-api.open-meteo.com`, so the advisory fires at the third failure. Measured
+  across 96 sessions, the markers raise the ≥3 sessions from 9 to 16 and the ≥5 from 5 to 6,
+  with zero known-good runs caught.
+
+### Changed
+
+- **A status code is now definitive in both directions.** A fetch reporting `200` is a
+  success and its text is never consulted, so a page that happens to contain the words
+  "HTTP Error 400" or a traceback is no longer read as a failure. Previously the text
+  fallback ran even after a successful status.
+- **The text fallback is restricted to shell tools.** A shell's `exitCode: 0` proves
+  nothing, so its text is the remaining evidence. Every other tool answers through its
+  structured value; guessing from an arbitrary tool's prose is how a `read` of a Python file
+  containing `ValueError:` becomes a failure.
+
+
 ## [0.5.0] - 2026-09-22
 
 ### Added
@@ -571,7 +601,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.4.0...v0.4.1

@@ -39,7 +39,7 @@ import { join } from 'node:path'
 
 import { DEFAULTS } from '../lib/defaults.js'
 import { classifyFailure } from '../lib/failure.js'
-import { fingerprints } from '../lib/fingerprints.js'
+import { fingerprints, isShell } from '../lib/fingerprints.js'
 
 const cfg = { ...DEFAULTS }
 
@@ -94,7 +94,7 @@ function resultText(data) {
  * reason this measurement cannot be exact, and it is why the classifier is reused
  * rather than reimplemented: the parts that CAN be reconstructed behave identically.
  */
-function classify(data) {
+function classify(data, toolName) {
   const text = resultText(data)
   const status = data.meta?.statusCode
   const reconstructed = {
@@ -103,7 +103,7 @@ function classify(data) {
     content: [{ type: 'text', text }],
     value: typeof status === 'number' ? { statusCode: status } : undefined,
   }
-  const failure = classifyFailure(reconstructed)
+  const failure = classifyFailure(reconstructed, { shell: isShell(toolName) })
   return failure === null ? null : failure
 }
 
@@ -160,7 +160,7 @@ for (const log of logs) {
     } catch {
       fps = []
     }
-    const failure = classify(data)
+    const failure = classify(data, call.name)
     sequence.push({ fps, failed: failure !== null })
   }
   if (sequence.length === 0) continue

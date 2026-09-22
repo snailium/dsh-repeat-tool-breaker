@@ -28,6 +28,7 @@ import {
   isTracked,
   limitFor,
 } from '../lib/fingerprints.js'
+import { classifyFailure, describeFailure } from '../lib/failure.js'
 import { createTracker, hasUserMessage } from '../lib/window.js'
 import { askMessage, denyMessage, renderResult, summarizeMessage, warnMessage } from '../lib/message.js'
 import { apply, name as PLUGIN_NAME } from '../index.js'
@@ -1175,4 +1176,122 @@ test('T37: failLimit validation is fail-loud, failWarnAt follows the stage rule'
     assert.equal(validateCfg(mergeDefaults({ failWarnAt: value })).failWarnAt, null)
   }
   assert.equal(validateCfg(mergeDefaults({ failWarnAt: 4 })).failWarnAt, 4)
+})
+
+// ---------------------------------------------------------------------------
+// T38+ — the failure shapes a real spin actually produces (0.5.1)
+//
+// Reported from a live run: five failing calls against one host, and the failure
+// track saw none of them. Not because the signals were missing but because the
+// shapes were: a shell PIPELINE exits with its last command's status, and a script
+// that catches its own HTTP error exits 0. Both leave the failure in the text only.
+// ---------------------------------------------------------------------------
+
+test('T38: a shell pipeline that masks its exit code is still a failure', () => {
+  // The real text, from the run that motivated this: `curl … | python3 … | head`
+  // exits 0, so `exitCode` is 0 and `isError` is false.
+  const pythonCrash = result({
+    kind: 'foreground',
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+  }, {
+    content: [{ type: 'text', text: '[stderr]\nTraceback (most recent call last):\n  File "/tmp/ym.py", line 3\n    with urllib.request.urlopen(url) as r:\nurllib.error.URLError: <urlopen error [Errno -2]>' }],
+  })
+  const failure = classifyFailure(pythonCrash, { shell: true })
+  assert.notEqual(failure, null, 'a traceback under exit code 0 must be a failure')
+  assert.equal(failure.reason, 'exception')
+  assert.match(describeFailure(failure), /URLError/)
+
+  // A syntax error is reported with no traceback header at all.
+  const syntaxError = result({ kind: 'foreground', exitCode: 0, signal: null, timedOut: false }, {
+    content: [{ type: 'text', text: '[stderr]\n  File "<string>", line 1\n    import sys,json; d=json.load(sys.stdin\nSyntaxError: unexpected EOF while parsing' }],
+  })
+  assert.equal(classifyFailure(syntaxError, { shell: true })?.reason, 'exception')
+
+  // An HTTP error the script caught and printed itself.
+  const caught = result({ kind: 'foreground', exitCode: 0, signal: null, timedOut: false }, {
+    content: [{ type: 'text', text: 'daily=snowfall -> HTTP Error 400: Bad Request {"error":true}' }],
+  })
+  assert.equal(classifyFailure(caught, { shell: true })?.reason, 'http')
+
+  // curl's own diagnostics.
+  const curlFail = result({ kind: 'foreground', exitCode: 0, signal: null, timedOut: false }, {
+    content: [{ type: 'text', text: '[stderr]\ncurl: (6) Could not resolve host: nope.invalid' }],
+  })
+  assert.equal(classifyFailure(curlFail, { shell: true })?.reason, 'curl')
+})
+
+test('T39: a clean shell result stays a success', () => {
+  const clean = result({ kind: 'foreground', exitCode: 0, signal: null, timedOut: false }, {
+    content: [{ type: 'text', text: "['latitude', 'longitude']\nn_days = 32" }],
+  })
+  assert.equal(classifyFailure(clean, { shell: true }), null)
+  // Prose that merely mentions an error word must not match: the exception pattern
+  // is anchored to the start of a line.
+  const prose = result({ kind: 'foreground', exitCode: 0, signal: null, timedOut: false }, {
+    content: [{ type: 'text', text: 'The docs say a ValueError: is raised when the input is bad.' }],
+  })
+  assert.equal(classifyFailure(prose, { shell: true }), null)
+})
+
+test('T40: the text fallback is reached even when `result.value` is absent entirely', () => {
+  // The report asked this directly. A profile that never populates `result.value`
+  // must not be permanently blind: with no structured value at all, a shell result
+  // still falls through to the text.
+  const noValue = {
+    isError: false,
+    content: [{ type: 'text', text: 'Traceback (most recent call last):\n  File "x.py", line 1\nRuntimeError: boom' }],
+  }
+  assert.equal(classifyFailure(noValue, { shell: true })?.reason, 'exception')
+  assert.equal(classifyFailure(noValue, { shell: false }), null, 'but only for a shell tool')
+})
+
+test('T41: a successful fetch is never re-read as text', () => {
+  // A fetched page can contain the words "HTTP Error 400" or a traceback. A status
+  // code is definitive in BOTH directions, so the text must not be consulted.
+  const page = result({ url: 'https://x.example.com/', statusCode: 200, truncated: false }, {
+    content: [{ type: 'text', text: 'Fetched https://x.example.com/ (HTTP 200)\n\nA post about Traceback (most recent call last) and HTTP Error 400.' }],
+  })
+  assert.equal(classifyFailure(page, { shell: false }), null)
+  assert.equal(classifyFailure(page, { shell: true }), null, 'the status wins for a shell too')
+
+  const notFound = result({ url: 'https://x.example.com/', statusCode: 404, truncated: false })
+  assert.equal(classifyFailure(notFound, { shell: false })?.reason, 'http')
+})
+
+test('T42: the failure track catches the reported spin, end to end', async () => {
+  // The live trajectory: five failing calls, all textually different, all exit 0,
+  // all against one host. The occurrence track sees nothing repeated; the failure
+  // track must fire at failWarnAt.
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, { onLimit: 'deny' })
+  const post = handlers.get('tools/post-execute')
+  const noop = async () => ({ kind: 'allow' })
+
+  // The real shape: a DIFFERENT script each time (so `exact:`/`cmd:` never repeat)
+  // that all talk to the SAME host. The URL has to be IN the command — a script whose
+  // URL lives in a file on disk is invisible to any fingerprint, which is a real
+  // limitation of the measure, not of the failure track.
+  const texts = [
+    '{"error":true,"reason":"Invalid value: Cannot initialize ForecastVariableDaily"}',
+    '[stderr]\n  File "<string>", line 1\nSyntaxError: unexpected EOF while parsing',
+    '[stderr]\nTraceback (most recent call last):\n  File "/tmp/ym.py", line 3\nurllib.error.URLError: <urlopen error>',
+    'daily=snowfall -> HTTP Error 400: Bad Request {"error":true}',
+    '[stderr]\nTraceback (most recent call last):\n  File "/tmp/ym3.py", line 10\nKeyError: \'time\'',
+  ]
+  let advice = ''
+  for (let i = 0; i < texts.length; i += 1) {
+    const exec = bash(
+      `python3 - <<'EOF'\nimport urllib.request\nurl="https://archive-api.open-meteo.com/v1/archive?daily=probe${i}"\nEOF`,
+    )
+    const res = result({ kind: 'foreground', exitCode: 0, signal: null, timedOut: false }, {
+      content: [{ type: 'text', text: texts[i] }],
+    })
+    const step = await drive(guards, post, exec, res, noop)
+    if (isFailureAdvice(step.advisory)) advice = step.advisory
+  }
+  assert.match(advice, new RegExp(`has failed ${FAIL_WARN} times in a row`), `got: ${advice.slice(0, 100)}`)
+  assert.match(advice, /host:archive-api\.open-meteo\.com/, 'the host carries the streak')
+  assert.doesNotMatch(advice, /exact:bash/, 'and not the command line')
 })

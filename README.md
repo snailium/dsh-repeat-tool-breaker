@@ -176,11 +176,32 @@ error status. Measured over 40 recorded sessions, the thrown case covered 40 of
 - a non-null `signal`;
 - a sandbox denial.
 
-A text-marker fallback (`[exit code: N]`, `(HTTP nnn)`, `[timed out after Nms]`,
-`[killed by signal: …]`, `[sandbox: file access denied`) covers a tool that
-declares nothing useful. Two things are deliberately **not** failures: `aborted`
-— a cancellation is external to the model's choice — and a background job that
-started (`kind: 'background'`, whose exit code belongs to a later call).
+A status code is **definitive in both directions**: a `200` is a success whatever
+words the page contains, so the text is never consulted for a fetch that reported
+one. That matters — a fetched document mentioning "HTTP Error 400" is not a
+failure.
+
+The text fallback then covers what the structured value cannot, and it is
+restricted to **shell tools** on purpose. A shell's `exitCode: 0` proves nothing:
+`curl … | python3 … | head` exits with `head`'s status, and a script that catches
+its own HTTP error exits 0 too. So for a shell the text is the remaining evidence:
+
+- `[exit code: N]`, `(HTTP nnn)`, `[timed out after Nms]`, `[killed by signal: …]`,
+  `[sandbox: file access denied` — the harness's own markers;
+- `Traceback (most recent call last)` and a line-anchored Python exception
+  (`SyntaxError:`, `urllib.error.URLError:`, …) — a script that crashed while the
+  pipeline still exited 0;
+- `HTTP Error nnn` — `urllib`'s message, printed by a script that caught it and
+  carried on;
+- `curl: (n)` — curl's own diagnostic.
+
+Every other tool answers through its structured value, so its prose is never
+guessed at: that is what keeps a fetched page, or a `read` of a Python file
+containing the word `ValueError:`, from being read as a failure.
+
+Two things are deliberately **not** failures: `aborted` — a cancellation is
+external to the model's choice — and a background job that started
+(`kind: 'background'`, whose exit code belongs to a later call).
 
 ### Only the fingerprint that hit is blocked
 

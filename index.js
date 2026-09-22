@@ -67,7 +67,14 @@
  * tolerates.
  */
 
-import { blockingHits, compileTracked, isTracked, fingerprints, limitFor } from './lib/fingerprints.js'
+import {
+  blockingHits,
+  compileTracked,
+  isShell,
+  isTracked,
+  fingerprints,
+  limitFor,
+} from './lib/fingerprints.js'
 import {
   askMessage,
   denyMessage,
@@ -334,7 +341,10 @@ export function apply(ctx, config = {}) {
         // before the call runs, which is also why the gate for it can only ever
         // fire on a LATER call.
         const { fps } = fingerprints(exec, cfg)
-        const failure = classifyFailure(result)
+        // `shell` gates the text fallback: a shell's exit code is masked by
+        // pipelines, so its text is the only remaining evidence; other tools answer
+        // through their structured value and must not be guessed at from prose.
+        const failure = classifyFailure(result, { shell: isShell(name) })
         const warned = tracker.noteOutcome(agent, fps, failure)
         if (warned.length > 0) {
           // Name the longest streak. A tie is broken by `measureRank` for the same

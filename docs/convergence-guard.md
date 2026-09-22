@@ -171,10 +171,33 @@ The reliable channel is the structured `result.value`, which every tool declares
 | `bash` | `{ kind, exitCode, signal, timedOut, aborted, … }` | `exitCode !== 0`, `timedOut`, non-null `signal` |
 | web fetch | `{ url, statusCode, truncated, … }` | `statusCode >= 400` |
 
-`lib/failure.js` reads those first and falls back to the text markers the renderers emit
-(`[exit code: N]`, `(HTTP nnn)`, `[timed out after Nms]`, `[killed by signal: X]`,
-`[sandbox: file access denied…]`). Two things are deliberately NOT failures: `aborted`
-(external to the model's choice) and a background job that started.
+`lib/failure.js` reads those first. A status code is definitive in both directions — a
+`200` is a success whatever the page says — so the text is never consulted for a fetch
+that reported one.
+
+The text fallback covers what the structured value cannot, and it is restricted to
+**shell tools**, because a shell's `exitCode: 0` proves nothing: `curl … | python3 … | head`
+exits with `head`'s status, and a script that catches its own HTTP error exits 0 as well.
+The markers are the harness's own (`[exit code: N]`, `(HTTP nnn)`, `[timed out after Nms]`,
+`[killed by signal: X]`, `[sandbox: file access denied…]`) plus four that a live run proved
+necessary (0.5.1): `Traceback (most recent call last)`, a line-anchored Python exception
+(`SyntaxError:`, `urllib.error.URLError:`, …), `HTTP Error nnn`, and `curl: (n)`.
+
+That last group is not a guess. A reported run spun seven calls against one host with five
+failures, every one of them textually different, **all with `isError: false` and exit code
+0** — a pipeline masking the status, and a script catching its own `HTTP Error 400`. The
+track saw none of them. With the four markers added, that run's failure streak is 4 on
+`host:archive-api.open-meteo.com`, so `failWarnAt: 3` fires at the third failure instead of
+never. Measured across 96 sessions the markers raise the ≥3 sessions from 9 to 16 and the
+≥5 from 5 to 6, with **zero known-good runs caught** either way; the one apparent exception
+was a run that failed on context size and had been mislabelled.
+
+Restricting the fallback to shells is what makes that safe: a fetched page mentioning
+"HTTP Error 400", or a `read` of a Python file containing `ValueError:`, is never read as a
+failure.
+
+Two things are deliberately NOT failures: `aborted` (external to the model's choice) and a
+background job that started.
 
 ### The rules that keep it safe
 
