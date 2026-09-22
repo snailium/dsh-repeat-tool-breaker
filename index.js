@@ -50,7 +50,7 @@
  * tolerates.
  */
 
-import { blockingHits, compileTracked, isTracked, fingerprints } from './lib/fingerprints.js'
+import { blockingHits, compileTracked, isTracked, fingerprints, limitFor } from './lib/fingerprints.js'
 import { askMessage, denyMessage, renderResult, summarizeMessage, warnMessage } from './lib/message.js'
 import { createTracker, hasUserMessage } from './lib/window.js'
 import { mergeDefaults, validateCfg } from './lib/defaults.js'
@@ -80,6 +80,27 @@ function messageId() {
   const uuid = globalThis.crypto?.randomUUID?.()
   if (typeof uuid === 'string') return `${name}-${uuid}`
   return `${name}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/**
+ * Which measure to NAME when several cross the same stage at the same count.
+ *
+ * Lower is preferred. A target-scoped measure is the actionable one — "you have
+ * called `api.example.com` six times" tells the model something it can act on,
+ * whereas `exact:` quotes a truncated command line, and `site:` lumps unrelated
+ * services together. Nothing about the escalation changes; only which identity the
+ * message names.
+ */
+const MEASURE_PREFERENCE = ['host', 'net', 'site', 'sink', 'cmd', 'exact']
+
+/**
+ * Rank one fingerprint for the tie-break above.
+ * @param fp - the fingerprint.
+ * @returns its preference index; unknown kinds sort last.
+ */
+function measureRank(fp) {
+  const index = MEASURE_PREFERENCE.indexOf(fp.split(':')[0])
+  return index === -1 ? MEASURE_PREFERENCE.length : index
 }
 
 /**
@@ -153,14 +174,25 @@ export function apply(ctx, config = {}) {
     const counts = tracker.tallyOf(agent)
     let chosen = null
     for (const fp of fps) {
+      // A measure with NO CAP has no gate, so it must have no escalation either: the
+      // stages live BELOW the cap, not beside it. Without this guard the disabled
+      // volume budgets (`site:`, `family:*`, `verb:*` are all `null` by default) still
+      // fire advisories — reintroducing, through the advisory channel, exactly the
+      // signal 0.3.2 and 0.3.3 deliberately turned off. One `curl` emits several of
+      // those measures at once, so the omission produced up to four near-identical
+      // messages about a single action.
+      if (!Number.isFinite(limitFor(fp, cfg.limits))) continue
       const next = (counts.get(fp) ?? 0) + 1
       let stage = 0
       if (cfg.summarizeAt !== null && next === cfg.summarizeAt) stage = 2
       else if (cfg.warnAt !== null && next === cfg.warnAt) stage = 1
       if (stage === 0) continue
-      if (chosen === null || stage > chosen.stage || (stage === chosen.stage && next > chosen.next)) {
-        chosen = { stage, fp, next }
-      }
+      const rank = measureRank(fp)
+      const better =
+        chosen === null ||
+        stage > chosen.stage ||
+        (stage === chosen.stage && (next > chosen.next || (next === chosen.next && rank < chosen.rank)))
+      if (better) chosen = { stage, fp, next, rank }
     }
     if (chosen === null) return null
     const message =

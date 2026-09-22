@@ -5,6 +5,36 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-22
+
+### Fixed
+
+- **A measure with no cap no longer escalates.** The advisory stages were applied to
+  EVERY fingerprint, ignoring `limits` — so the volume measures that ship DISABLED
+  (`site:`, `family:*`, `verb:*` are all `null`) still warned, and still demanded
+  summaries. One `curl` emits four of those measures at once, so a single action could
+  produce up to four near-identical messages about one behaviour. Observed in
+  production as `verb:cd has come up 3 times` followed by `verb:cd has now come up 6
+  times`, and in a test-battery run as **5 messages in 7 tool calls** covering only 3
+  distinct behaviours. The stages live BELOW the cap: a measure with no cap has no
+  gate, so it must have no escalation either.
+  Reported by the backend-test session in `GUARD-OVERTRIGGER-REPORT.md`.
+
+- **The message now names the useful measure.** Identical calls cross `exact:`, `net:`,
+  `site:` and `host:` at the same count, and the first in iteration order won — which
+  usually meant a truncated command line (`exact:bash:{"command":"curl -s \"…`). A
+  target-scoped measure is preferred: `host:` > `net:` > `site:` > `sink:` > `cmd:` >
+  `exact:`.
+
+### Notes
+
+- **Thresholds are unchanged in this release.** The same report also argues that
+  `warnAt: 3` and `summarizeAt: 6` sit low relative to a known-good run (which reached
+  4–8 requests to one host). That needs the wider measurement the report itself asks
+  for, and it should be judged only after the bug above is out of the way: the bug
+  accounted for most of the observed message volume, because it multiplied one action
+  into four measures.
+
 ## [0.4.0] - 2026-09-21
 
 The escalation release. Repetition is no longer a wall you hit once: the same
@@ -448,7 +478,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.3.1...v0.3.2

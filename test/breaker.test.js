@@ -878,3 +878,62 @@ test('T23: a human turn clears the exemption and the window', async () => {
     'the cap-th local call of the new turn asks again instead of sailing through',
   )
 })
+
+test('T28: a measure with no cap never escalates — the stages live BELOW the cap', async () => {
+  // Regression: `stageAdvisory` originally ignored `limits` entirely, so the volume
+  // measures that ship DISABLED (`site:`, `family:*`, `verb:*` are all `null`) still
+  // fired advisories. One `curl` emits four of them at once, so a single action could
+  // produce up to four near-identical messages — observed in production as
+  // `verb:cd has come up 3 times` and `family:http-fetch has now come up 6 times`.
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, {})
+  const post = handlers.get('tools/post-execute')
+  const noop = async () => ({ kind: 'allow' })
+  const agent = { id: 'uncapped-agent' }
+
+  // Six DIFFERENT urls: `verb:curl` and `family:http-fetch` climb to 6, but both are
+  // null-capped, so nothing may be delivered.
+  for (let i = 1; i <= 6; i += 1) {
+    const exec = bash(`curl -s https://host${i}.example.com/p`)
+    guards[0](exec)
+    const decision = await post(exec, { content: [{ type: 'text', text: 'ok' }] }, noop)
+    assert.equal(decision?.additionalContexts, undefined, `no advisory may fire on call ${i}`)
+  }
+
+  // A CAP the operator turns ON makes the same measure escalate.
+  const on = fakeCtx()
+  apply(on.ctx, { limits: { 'verb:curl': 9 } })
+  const onPost = on.handlers.get('tools/post-execute')
+  const agent2 = { id: 'capped-agent' }
+  const seen = []
+  for (let i = 1; i <= 3; i += 1) {
+    const exec = bash(`curl -s https://host${i}.example.com/p`)
+    on.guards[0](exec)
+    const decision = await onPost(exec, { content: [{ type: 'text', text: 'ok' }] }, noop)
+    for (const message of decision?.additionalContexts ?? []) seen.push(message.content[0].text)
+  }
+  assert.equal(seen.length, 1, 'the now-capped verb escalates exactly once, at 3')
+  assert.match(seen[0], /verb:curl has come up 3 times/)
+})
+
+test('T29: when several measures cross together, the message names the useful one', async () => {
+  // Identical calls cross `exact:`, `net:`, `site:` and `host:` at the same count.
+  // Naming `exact:` quotes a truncated command line; the target is what the model can
+  // act on.
+  const { ctx, guards, handlers } = fakeCtx()
+  apply(ctx, {})
+  const post = handlers.get('tools/post-execute')
+  const noop = async () => ({ kind: 'allow' })
+  const agent = { id: 'tie-agent' }
+  const command = 'curl -s "https://api.example.com/v1/items?page=1"'
+  const seen = []
+  for (let i = 1; i <= 3; i += 1) {
+    const exec = bash(command)
+    guards[0](exec)
+    const decision = await post(exec, { content: [{ type: 'text', text: 'ok' }] }, noop)
+    for (const message of decision?.additionalContexts ?? []) seen.push(message.content[0].text)
+  }
+  assert.equal(seen.length, 1)
+  assert.match(seen[0], /host:api\.example\.com has come up 3 times/, `named: ${seen[0].split('\n')[0]}`)
+  assert.doesNotMatch(seen[0], /exact:bash/, 'must not dump the command line')
+})
