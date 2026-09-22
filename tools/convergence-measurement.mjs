@@ -2,6 +2,20 @@
 /**
  * Convergence-guard measurement (development tooling; not published).
  *
+ * SUPERSEDED by `threshold-sweep.mjs`. Kept for provenance: this is the tool that
+ * produced the measurement which set the original thresholds, so its output is the
+ * record of that decision. Two things make its numbers unsafe to reuse:
+ *
+ *   - it tallies EVERY fingerprint, including the `null`-capped `site:`, `family:*`
+ *     and `verb:*` measures that 0.4.1 no longer escalates at all. Its per-kind
+ *     tables therefore report advisories production cannot deliver -- which is
+ *     exactly how 0.4.0's over-trigger was mistaken for a threshold problem;
+ *   - it counts crossings, not messages, and `stageAdvisory` emits at most one
+ *     message per call.
+ *
+ * `threshold-sweep.mjs` fixes both and is validated against the real tool pipeline
+ * by `count-model-check.mjs`. Use it for any new threshold decision.
+ *
  * Replays recorded session logs through the plugin's OWN `lib/fingerprints.js`, so
  * the measurement reflects real fingerprint behaviour rather than a reimplementation.
  *
