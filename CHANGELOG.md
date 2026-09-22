@@ -5,6 +5,47 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-22
+
+### Changed
+
+- **The three stages are retuned: `warnAt: 3 → 7`, `summarizeAt: 6 → 11`, and the caps
+  `9 → 12` (with `host` at 16).** No behaviour changed and no setting was added or
+  removed; only the numbers moved. The measurement is in `docs/issue-b-thresholds.md`.
+
+  0.4.1's note deferred this until a wider corpus existed. That corpus is 109 recorded
+  sessions with known or unknown outcomes, replayed through the plugin's own
+  fingerprinting and validated against the real tool pipeline: the replay model and the
+  genuine `dsh-tools` ToolRuntime agree exactly on every session and cap setting tried,
+  including the two worst sessions (38/38 and 698/698 advisories and gate calls at the
+  old caps; 15/15 and 246/246 at the new ones).
+
+  What it showed:
+
+  - **The old stages fired on runs that succeeded.** Two known-good runs peaked at 4 and
+    6 repeats of one measure, and `warnAt: 3` sits below both. 10% of real sessions
+    reach a peak of 13, which was above the old cap of 9.
+  - **The old defaults cost a lot.** Over the 109 non-stuck sessions: 629 advisory
+    messages, 49 sessions warned, 19 gated, 2296 calls blocked. The new defaults deliver
+    158 messages, warn 26 and gate 10 — while still catching the known-stuck run.
+  - **`host:` is deliberately looser (16) than action identity (12).** It discards the
+    URL path, so installing many packages from one mirror and re-fetching one broken URL
+    look identical to it; it accounted for 25 of the 48 (session, fingerprint) pairs
+    that reached a cap at 9. 16 is the window itself — the whole window is one host.
+
+### Notes
+
+- **A stage above a cap can never be delivered.** The gate fires first, so a
+  `summarizeAt` at or above every cap is dead code — which is why the stages and the caps
+  move together. Nothing validates one setting against another (a `limits` entry below a
+  stage remains a deliberate way to skip the advisory), but the *defaults* must not ship
+  a stage that can never speak. For the same reason a threshold above the window (16) can
+  never fire.
+- **`tools/convergence-measurement.mjs` is superseded** by `tools/threshold-sweep.mjs`.
+  The old tool tallied every fingerprint including the `null`-capped measures 0.4.1
+  stopped escalating, and counted crossings rather than messages — which is how 0.4.0's
+  over-trigger was first mistaken for a threshold problem.
+
 ## [0.4.1] - 2026-09-22
 
 ### Fixed

@@ -64,6 +64,11 @@ const hit = (hits, prefix) => hits.some((entry) => entry.fp.startsWith(prefix))
  * rewriting every test.
  */
 const CAP = cfg.limits.exact
+/** The two advisory stages, likewise read from the shipped defaults. */
+const WARN = cfg.warnAt
+const SUMMARIZE = cfg.summarizeAt
+/** `host:` is deliberately looser than action identity; see docs/issue-b-thresholds.md. */
+const HOST_CAP = cfg.limits.host
 
 /** Run one call until it is denied; returns that deny result and how long it took. */
 function runUntilDenied(tracker, exec, max = CAP + 2) {
@@ -527,14 +532,14 @@ test('T13c: hasUserMessage only trusts the human source', () => {
 // T14 — documented shape of the shipped defaults
 // ---------------------------------------------------------------------------
 
-test('T14: shipped defaults are the 0.4.0 table', () => {
+test('T14: shipped defaults are the 0.4.2 table', () => {
   assert.equal(DEFAULTS.window, 16)
   assert.deepEqual(DEFAULTS.limits, {
-    exact: 9,
-    cmd: 9,
-    net: 9,
-    sink: 9,
-    host: 9,
+    exact: 12,
+    cmd: 12,
+    net: 12,
+    sink: 12,
+    host: 16,
     site: null,
     'family:http-fetch': null,
     'verb:curl': null,
@@ -546,8 +551,8 @@ test('T14: shipped defaults are the 0.4.0 table', () => {
   assert.equal(DEFAULTS.onLimit, 'ask', 'the gate must work without a hand-written patch')
   // Asking is no longer a local-only concern, so `localHosts` no longer has `ask`.
   assert.equal(DEFAULTS.localHosts, 'deny')
-  assert.equal(DEFAULTS.warnAt, 3)
-  assert.equal(DEFAULTS.summarizeAt, 6)
+  assert.equal(DEFAULTS.warnAt, 7)
+  assert.equal(DEFAULTS.summarizeAt, 11)
   assert.equal(DEFAULTS.includeLocal, false)
   assert.deepEqual(DEFAULTS.exclude, ['todo_write'])
   // Removed in 0.2.4: the key only ever fed the path-only file fingerprints, which
@@ -602,7 +607,7 @@ test('T14b: DOCUMENTED BEHAVIOR — volume is not a loop signal, so a batch alwa
 test('T14c: pagination — net: stays distinct, host: is the convergence measure', () => {
   const tracker = createTracker(cfg)
   const page = (n) => bash(`curl -sL "https://api.github.com/repos/o/r/commits?per_page=100&page=${n}"`)
-  for (let n = 1; n <= 8; n += 1) {
+  for (let n = 1; n < HOST_CAP; n += 1) {
     const { hits, fps } = run(tracker, page(n))
     assert.deepEqual(hits, [], `page ${n} must be allowed`)
     assert.equal(fps.filter((fp) => fp.startsWith('net:')).length, 1, 'one net: fingerprint per call')
@@ -612,15 +617,15 @@ test('T14c: pagination — net: stays distinct, host: is the convergence measure
   // holds: the query is part of the fingerprint, so `?page=2` is a different
   // resource from `?page=1`.
   //
-  // They are, however, eight requests to ONE host, so `host:` has reached 8 and the
-  // next call to that host is the cap-th. That is the DESIGN, not a leftover of 0.3.2:
-  // `net:` stops punishing pagination, and `host:` bounds how many requests one target
-  // receives — with stage 1 at 3 and stage 2 at 6 underneath, where a paging model is
+  // They are, however, requests to ONE host, so `host:` has reached HOST_CAP - 1 and
+  // the next call to that host is the cap-th. That is the DESIGN, not a leftover of
+  // 0.3.2: `net:` stops punishing pagination, and `host:` bounds how many requests one
+  // target receives — with the two advisory stages underneath, where a paging model is
   // told to use a larger per-batch amount instead of walking many small ones. A model
   // that takes that advice finishes well under the gate; one that ignores it is exactly
   // what the gate is for. The advice is deliberately backend-agnostic — the same shape
   // appears when an agent reads a file line by line.
-  const ninth = run(tracker, page(9))
+  const ninth = run(tracker, page(HOST_CAP))
   assert.ok(
     ninth.hits.some((entry) => entry.fp === 'host:api.github.com'),
     `expected host: to accumulate across pages, got ${JSON.stringify(ninth.hits)}`,
@@ -721,7 +726,7 @@ test('T26: an exemption covers only the measures that hit', () => {
   assert.deepEqual(blockingHits(offending, new Set()), offending, 'no exemption blocks everything')
 })
 
-test('T24: the three stages fire at 3, 6 and 9 on one measure', async () => {
+test('T24: the three stages fire at warnAt, summarizeAt and the cap', async () => {
   const { ctx, guards, handlers } = fakeCtx()
   // onLimit: deny isolates the two advisory stages from the gate.
   apply(ctx, { onLimit: 'deny' })
@@ -743,22 +748,27 @@ test('T24: the three stages fire at 3, 6 and 9 on one measure', async () => {
   const at = (n) => observed[n - 1]
 
   assert.equal(at(1).advisory, '', 'nothing on the first call')
-  assert.equal(at(2).advisory, '')
-  assert.match(at(3).advisory, /^CONVERGENCE_CHECK: you are repeating yourself/, 'stage 1 at 3')
-  assert.equal(at(4).advisory, '', 'the stage fires once per crossing, not on every later call')
-  assert.equal(at(5).advisory, '')
-  assert.match(at(6).advisory, /summarise your progress/, 'stage 2 at 6')
-  assert.match(at(6).advisory, /larger per-batch amount/, 'and it names the batching lever')
+  assert.equal(at(WARN - 1).advisory, '', `nothing before stage 1 (${WARN})`)
+  assert.match(
+    at(WARN).advisory,
+    /^CONVERGENCE_CHECK: you are repeating yourself/,
+    `stage 1 at ${WARN}`,
+  )
+  assert.equal(at(WARN + 1).advisory, '', 'the stage fires once per crossing, not on every later call')
+  assert.equal(at(SUMMARIZE - 1).advisory, '', `nothing between the stages (${WARN + 1}..${SUMMARIZE - 1})`)
+  assert.match(at(SUMMARIZE).advisory, /summarise your progress/, `stage 2 at ${SUMMARIZE}`)
+  assert.match(at(SUMMARIZE).advisory, /larger per-batch amount/, 'and it names the batching lever')
   assert.doesNotMatch(
-    at(6).advisory,
+    at(SUMMARIZE).advisory,
     /paging|per_page|page size/i,
     'the advice must stay backend-agnostic: the same failure shows up reading a file line by line',
   )
-  assert.equal(at(7).advisory, '')
-  assert.equal(at(8).advisory, '')
-  assert.equal(at(9).denied, true, 'the cap-th call is the gate')
-  assert.match(at(9).denial, /REPEAT_TOOL_BLOCKED/)
-  assert.doesNotMatch(at(9).denial, /budget/i, 'no invented budget figure')
+  for (let i = SUMMARIZE + 1; i < CAP; i += 1) {
+    assert.equal(at(i).advisory, '', `nothing between stage 2 and the gate (call ${i})`)
+  }
+  assert.equal(at(CAP).denied, true, 'the cap-th call is the gate')
+  assert.match(at(CAP).denial, /REPEAT_TOOL_BLOCKED/)
+  assert.doesNotMatch(at(CAP).denial, /budget/i, 'no invented budget figure')
   // No advisory message may look like a tool-call template.
   for (const entry of observed) {
     assert.doesNotMatch(entry.advisory, /<tool_call>|<function=/, 'no template-looking text')
@@ -891,9 +901,10 @@ test('T28: a measure with no cap never escalates — the stages live BELOW the c
   const noop = async () => ({ kind: 'allow' })
   const agent = { id: 'uncapped-agent' }
 
-  // Six DIFFERENT urls: `verb:curl` and `family:http-fetch` climb to 6, but both are
-  // null-capped, so nothing may be delivered.
-  for (let i = 1; i <= 6; i += 1) {
+  // WARN different urls: `verb:curl` and `family:http-fetch` climb to WARN, but both
+  // are null-capped, so nothing may be delivered. The loop must reach the stage
+  // threshold exactly -- a shorter one would pass trivially and prove nothing.
+  for (let i = 1; i <= WARN; i += 1) {
     const exec = bash(`curl -s https://host${i}.example.com/p`)
     guards[0](exec)
     const decision = await post(exec, { content: [{ type: 'text', text: 'ok' }] }, noop)
@@ -902,18 +913,18 @@ test('T28: a measure with no cap never escalates — the stages live BELOW the c
 
   // A CAP the operator turns ON makes the same measure escalate.
   const on = fakeCtx()
-  apply(on.ctx, { limits: { 'verb:curl': 9 } })
+  apply(on.ctx, { limits: { 'verb:curl': CAP } })
   const onPost = on.handlers.get('tools/post-execute')
   const agent2 = { id: 'capped-agent' }
   const seen = []
-  for (let i = 1; i <= 3; i += 1) {
+  for (let i = 1; i <= WARN; i += 1) {
     const exec = bash(`curl -s https://host${i}.example.com/p`)
     on.guards[0](exec)
     const decision = await onPost(exec, { content: [{ type: 'text', text: 'ok' }] }, noop)
     for (const message of decision?.additionalContexts ?? []) seen.push(message.content[0].text)
   }
-  assert.equal(seen.length, 1, 'the now-capped verb escalates exactly once, at 3')
-  assert.match(seen[0], /verb:curl has come up 3 times/)
+  assert.equal(seen.length, 1, `the now-capped verb escalates exactly once, at ${WARN}`)
+  assert.match(seen[0], new RegExp(`verb:curl has come up ${WARN} times`))
 })
 
 test('T29: when several measures cross together, the message names the useful one', async () => {
@@ -927,13 +938,17 @@ test('T29: when several measures cross together, the message names the useful on
   const agent = { id: 'tie-agent' }
   const command = 'curl -s "https://api.example.com/v1/items?page=1"'
   const seen = []
-  for (let i = 1; i <= 3; i += 1) {
+  for (let i = 1; i <= WARN; i += 1) {
     const exec = bash(command)
     guards[0](exec)
     const decision = await post(exec, { content: [{ type: 'text', text: 'ok' }] }, noop)
     for (const message of decision?.additionalContexts ?? []) seen.push(message.content[0].text)
   }
   assert.equal(seen.length, 1)
-  assert.match(seen[0], /host:api\.example\.com has come up 3 times/, `named: ${seen[0].split('\n')[0]}`)
+  assert.match(
+    seen[0],
+    new RegExp(`host:api\\.example\\.com has come up ${WARN} times`),
+    `named: ${seen[0].split('\n')[0]}`,
+  )
   assert.doesNotMatch(seen[0], /exact:bash/, 'must not dump the command line')
 })

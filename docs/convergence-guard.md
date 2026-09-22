@@ -36,13 +36,17 @@ One window (the existing **16-call, same-turn** window), one policy per **measur
 | **9** (the `limits` entry) | 3 | **Gate.** On a web profile, ask the operator for an exemption; unattended (headless) the ask resolves to `unavailable` and the call is denied. |
 | after an approved exemption | — | **Stop counting that measure**; every later identical measure is exempt for the rest of the turn. |
 
+> The counts above are the **0.4.0** values, kept because the rationale below is the
+> record of that decision. They were retuned in 0.4.2 (`7` / `11` / `12`, with `host` at
+> `16`) — see §2.4. `lib/defaults.js` is the ground truth for the current numbers.
+
 Headless is not a separate branch: an unattended approval request already resolves to a
 denial, which is how `localHosts: ask` degrades today. One mechanism, two profiles.
 
 At most one prompt per measure per turn; a refusal gates that measure for the remainder
 of the turn without re-prompting.
 
-### 2.1 Consequence: the hard cap moves from 5 to 9
+### 2.1 Consequence: the hard cap moves from 5 to 9 (0.4.0)
 
 This is the one structural change that follows from the three-stage design, and it must
 be stated explicitly because it alters existing behaviour.
@@ -76,20 +80,56 @@ off-switch, not a value to reject — same treatment as `null`, which is how `li
 already expresses "off". The only remaining validation is that an *enabled* stage is an
 integer, and each `limits` entry keeps its existing rule.
 
-Net effect of the shipped defaults: the hard break moves later (5 → 9), and two
-escalations are inserted before it. On a headless profile, which is where the hard
-guarantee matters most, a byte-identical loop is still stopped — at 9 instead of 5.
+Net effect of the 0.4.0 defaults: the hard break moved later (5 → 9), and two escalations
+were inserted before it. On a headless profile, which is where the hard guarantee matters
+most, a byte-identical loop is still stopped — at 9 instead of 5. (The cap has since moved
+again, to 12; see §2.4.)
 
 ### 2.2 No latch is needed
 
-The advisory stages can only fire at counts 3 and 6 before the gate takes over at 9. A
-latch would only suppress the second of at most two escalations.
+The advisory stages can only fire once each before the gate takes over, so a latch would
+only suppress the second of at most two escalations. (At the 0.4.0 numbers: 3 and 6, with
+the gate at 9.)
 
 ### 2.3 Exemption stops counting
 
 The operator's rule is *stop counting*, not merely "stop blocking": an exempted measure
 is dropped at commit time, so it is not incremented and cannot escalate again until the
 turn ends.
+
+### 2.4 The 0.4.2 retune: 7 / 11 / 12 (host 16)
+
+The 0.4.0 numbers were chosen from a 72-session corpus and a narrower measure set. A
+later corpus — 109 sessions, replayed through the plugin's own fingerprinting and
+validated against the real tool pipeline — showed the stages firing on runs that
+succeeded, so 0.4.2 moved them. The full measurement is in
+[issue-b-thresholds.md](issue-b-thresholds.md); the short version:
+
+| | 0.4.0 | 0.4.2 |
+| --- | --- | --- |
+| `warnAt` | 3 | **7** |
+| `summarizeAt` | 6 | **11** |
+| `limits.exact` / `cmd` / `net` / `sink` | 9 | **12** |
+| `limits.host` | 9 | **16** |
+
+Three findings drove it, and the third is a constraint rather than a preference:
+
+1. **The old stages fired on known-good runs.** Two runs that completed the task peaked
+   at 4 and 6 repeats of one measure; `warnAt: 3` sits below both. 10% of real sessions
+   reach a peak of 13, which was above the old cap of 9.
+2. **`host:` needs more evidence than action identity.** It discards the URL path, so
+   installing many packages from one mirror and re-fetching one broken URL are the same
+   shape to it. It accounted for 25 of the 48 `(session, fingerprint)` pairs that reached
+   a cap at 9. 16 is the window itself: the whole window is one host.
+3. **A stage at or above a cap can never be delivered.** The gate fires first, so a
+   `summarizeAt` at or above every cap is dead code, and so is any threshold above the
+   window (16). This is why the stages and the caps move together — and why nothing
+   *validates* one against another: an operator may still put a cap below a stage to skip
+   an advisory, but the defaults must not ship a stage that can never speak.
+
+Measured over the 109 non-stuck sessions, the change takes advisory messages from 629 to
+158, warned sessions from 49 to 26, gated sessions from 19 to 10, and blocked calls from
+2296 to 1595 — while still catching the known-stuck run.
 
 ## 3. The measure set: **A — all capped measures, uniformly**
 
@@ -100,10 +140,12 @@ fingerprints are all distinct, and in a 12-call window nothing else accumulates.
 the normalized host with no path or query, so `.../items?STN_ID=13849` and
 `.../forecast?site_id=1` on one host are one measure.
 
-### 3.1 Measured cost of option A
+### 3.1 Measured cost of option A (0.4.0 corpus, superseded)
 
 From §10, over 72 unique production sessions, set A versus narrower sets are nearly
-identical at the blocking stage — `host` alone accounts for almost everything:
+identical at the blocking stage — `host` alone accounts for almost everything. These are
+the **0.4.0** figures, before the retune; the 109-session measurement that replaced them
+is in §2.4. The stage columns are the 0.4.0 thresholds (3 / 6 / 9):
 
 | Measure set | ≥3 | ≥6 | ≥9 |
 | --- | --- | --- | --- |
@@ -183,7 +225,7 @@ batch several small calls into one — and reduce the total number of calls.
 The batching paragraph targets the observed failure directly: 30 small `curl` calls
 against one host instead of a few larger ones.
 
-### 4.3 Stage 3 at 9 — the gate
+### 4.3 Stage 3 at the `limits` entry — the gate
 
 An operator prompt carrying the reason: the measure, the count, what approval buys (the
 rest of the turn for that measure) and what declining leaves (gated until the next human
@@ -199,19 +241,19 @@ later "completes" one with an invented number.
 ```yaml
 - id: repeat-tool-breaker
   config:
-    warnAt: 3             # stage 1; 0 or negative (or null) disables it silently
-    summarizeAt: 6        # stage 2; 0 or negative (or null) disables it silently
+    warnAt: 7             # stage 1; 0 or negative (or null) disables it silently
+    summarizeAt: 11       # stage 2; 0 or negative (or null) disables it silently
     onLimit: ask          # what happens AT `limits` — ask (unattended -> deny) | deny
     localHosts: deny      # allow | deny  (the `ask` value is removed; see §6)
     includeLocal: false   # NEW: whether local hosts count toward the host measure
-    window: 16            # MOVED from 12
+    window: 16            # the whole scale is clamped by this
     # `limits` IS the stage-3 threshold. There is deliberately no `gateAt` — see §2.1.
     limits:
-      exact: 9            # MOVED from 5
-      cmd: 9
-      net: 9
-      sink: 9
-      host: 9             # NEW measure
+      exact: 12           # 5 -> 9 in 0.4.0, -> 12 in 0.4.2; see §2.4
+      cmd: 12
+      net: 12
+      sink: 12
+      host: 16            # NEW measure, and looser: it discards the URL path
       site: null          # volume budgets stay off
       'family:http-fetch': null
       'verb:curl': null
@@ -226,7 +268,7 @@ an error** — a deliberate off-switch, the same way `limits: null` already mean
 
 ## 6. The breaking change: `onLimit` absorbs `localHosts: ask`
 
-The gate at 9 **is** the "generalize the ask" change agreed earlier, so this is one
+The gate **is** the "generalize the ask" change agreed earlier, so this is one
 feature:
 
 - `limits` cap → `onLimit: deny` gives a hard denial; `onLimit: ask` gives the gate.

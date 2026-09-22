@@ -297,8 +297,22 @@ if (viable.length === 0) {
 // `summarizeAt: 12-16` is only meaningful together with raised caps. Each row below
 // is a complete, loadable configuration, measured over the same corpus.
 console.log('\n=== whole-configuration candidates ===')
+// The 0.4.1 table, so the comparison is against the real shipped baseline rather
+// than against whatever `DEFAULTS.limits` happens to be now.
+const V041_LIMITS = {
+  exact: 9,
+  cmd: 9,
+  net: 9,
+  sink: 9,
+  host: 9,
+  site: null,
+  'family:http-fetch': null,
+  'verb:curl': null,
+  'verb:wget': null,
+}
 const CANDIDATES = [
-  ['shipped 3/6 cap9', { warnAt: 3, summarizeAt: 6, limits: DEFAULTS.limits }],
+  ['0.4.1 3/6 cap9', { warnAt: 3, summarizeAt: 6, limits: V041_LIMITS }],
+  ['SHIPPED (0.4.2)', { limits: DEFAULTS.limits }],
   ['B  6/8 cap9', { warnAt: 6, summarizeAt: 8, limits: DEFAULTS.limits }],
   ['C  7/8 cap9', { warnAt: 7, summarizeAt: 8, limits: DEFAULTS.limits }],
   ['D  7/11 cap12/16', { warnAt: 7, summarizeAt: 11, limits: { exact: 12, cmd: 12, net: 12, sink: 12, host: 16 } }],

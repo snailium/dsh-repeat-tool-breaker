@@ -9,14 +9,15 @@ Escalating repeat detection for an agent's tool calls. A local, dependency-free
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin
 that registers one synchronous gate on the public `ctx.tools.guard` API. A
 measure repeated inside the agent's sliding window is not stopped at the first
-threshold: it escalates — a light warning at 3, a written-summary demand at 6,
-and the gate at 9, where the operator is offered a turn-scoped exemption
+threshold: it escalates — a light warning at 7, a written-summary demand at 11,
+and the gate at 12 (16 for the coarser `host:` measure), where the operator is
+offered a turn-scoped exemption
 (`onLimit: ask`, the default) or the call is denied outright. When the gate
 denies, the call never executes and the model gets an `isError` result starting
 with `REPEAT_TOOL_BLOCKED` that quotes the previous result and says what to do
 instead.
 
-In one paragraph, the v1 → v2 → 0.4.0 story:
+In one paragraph, the v1 → v2 → 0.4.x story:
 
 > **v1 lost** because it counted *byte-identical consecutive* calls while the
 > model varied a presentation field (`description: '1st'|'2nd'|'3rd'`, churning
@@ -27,42 +28,46 @@ In one paragraph, the v1 → v2 → 0.4.0 story:
 > counting *semantic* fingerprints (`exact:`, `cmd:`, `net:`, `host:`, `site:`,
 > `sink:`, `family:`, `verb:`) over a per-agent window of the last 16 calls, so a
 > repeat has to change the actual resource — not its spelling — to pass.
-> **0.4.0 adds escalation**: the same measure warns at 3, demands a summary at 6,
-> and only gates at 9, and the gate asks the operator rather than blocking
-> silently.
+> **0.4.0 adds escalation**: the same measure warns, demands a summary, and only
+> then gates — retuned in 0.4.2 to 7 / 11 / 12, with `host:` at 16 — and the gate
+> asks the operator rather than blocking silently.
 
 ## The three loops, and what catches each
 
 | | Loop | Caught by |
 |---|---|---|
-| **A** | the same `read`/`write`/`bash` arguments again, verbatim | `exact:` (9) |
-| **B** | `description: '1st'/'2nd'/'3rd'`, `command` unchanged | decoy arguments are stripped **before** fingerprinting, so the calls become byte-identical → `exact:` (9) |
-| **C** | `curl --max-time 60 open-data.canada.ca` ↔ `curl --max-time 30 open.canada.ca` | `net:` (9) after host-alias folding, plus `sink:` (9) and `cmd:` (9) after volatile-flag stripping |
+| **A** | the same `read`/`write`/`bash` arguments again, verbatim | `exact:` (12) |
+| **B** | `description: '1st'/'2nd'/'3rd'`, `command` unchanged | decoy arguments are stripped **before** fingerprinting, so the calls become byte-identical → `exact:` (12) |
+| **C** | `curl --max-time 60 open-data.canada.ca` ↔ `curl --max-time 30 open.canada.ca` | `net:` (12) after host-alias folding, plus `sink:` (12) and `cmd:` (12) after volatile-flag stripping |
 
 A fixed strategy is a fourth failure mode that none of those loops catches: a
 high-volume but *non-repetitive* run against one target, where every query string
 differs so `net:` never collides. On the reference deployment one agent made 30
 `bash`/`curl` calls against a single host in one turn and never converged. The
-`host:` measure (new in 0.4.0, cap 9) is what makes it visible; see
+`host:` measure (new in 0.4.0, cap 16) is what makes it visible; see
 [How a call is fingerprinted](#how-a-call-is-fingerprinted).
 
 The sibling official plugin `@deepseek-ai/dsh-repeat-tool-reminder` (advisory, at
 3/5/8 repeats) may stay on — the two compose, with the reminder as the soft nudge
-and this breaker as the escalating gate that asks at 9.
+and this breaker as the escalating gate that asks at 12.
 
 ## The three stages
 
 Every measure — one fingerprint identity such as `exact:<tool>:…`,
-`net:<host><path>?<query>`, or `host:<host>` — has the same three thresholds. A
-stage fires **once per crossing, on exact equality**: the count *including* the
-current call must equal the threshold, so the window sliding does not
-re-announce it.
+`net:<host><path>?<query>`, or `host:<host>` — has the same three-stage
+structure. A stage fires **once per crossing, on exact equality**: the count
+*including* the current call must equal the threshold, so the window sliding does
+not re-announce it.
 
 | Count | Setting | Stage | What happens |
 |---|---|---|---|
-| 3 | `warnAt` | 1 — light warning | The model is told it is repeating and should consider whether a different route would get there faster. Nothing is blocked and nothing is demanded. |
-| 6 | `summarizeAt` | 2 — summary demand | The model must write down what it established, what it assumed without verifying, what failed and why, and **at least two approaches it has not tried** — plus an instruction to use a **larger per-batch amount** so there are fewer batches. Nothing is blocked. |
-| 9 | the `limits` entry | 3 — the gate | `onLimit: ask` (default) offers the operator a turn-scoped exemption; `onLimit: deny` blocks outright. An unattended ask degrades to a denial. |
+| 7 | `warnAt` | 1 — light warning | The model is told it is repeating and should consider whether a different route would get there faster. Nothing is blocked and nothing is demanded. |
+| 11 | `summarizeAt` | 2 — summary demand | The model must write down what it established, what it assumed without verifying, what failed and why, and **at least two approaches it has not tried** — plus an instruction to use a **larger per-batch amount** so there are fewer batches. Nothing is blocked. |
+| 12 | the `limits` entry | 3 — the gate | `onLimit: ask` (default) offers the operator a turn-scoped exemption; `onLimit: deny` blocks outright. An unattended ask degrades to a denial. |
+
+The cap is 12 for the action-identity measures (`exact`, `cmd`, `net`, `sink`) and 16
+for the coarser `host:` measure — the whole window. See
+[Tuning](#tuning-and-how-these-numbers-were-chosen).
 
 `limits` **is** the stage-3 threshold. There is deliberately no separate
 `gateAt`: a second gate number would be the same value written twice, and two
@@ -82,11 +87,21 @@ against another**:
 - `0`, a negative number, or `null` disables a stage **silently** — that is the
   documented off-switch, not a value to reject;
 - a `limits` entry at or below a stage means "no escalation for this measure":
-  `exact: 5` under `warnAt: 3` gates at 5 with no warning at all;
+  `exact: 5` under `warnAt: 7` gates at 5 with no warning at all;
 - inverted stages are legal too — the stronger message simply fires first.
 
 When several measures cross a stage on the same call, the strongest stage wins
 and ties go to the highest count.
+
+### A stage above a cap can never speak
+
+The gate fires before the advisory, so a `summarizeAt` at or above every cap is
+dead code, and no threshold above the window (16) can fire at all. Nothing
+validates one setting against another — a `limits` entry below a stage remains a
+deliberate way to skip an advisory — but the shipped defaults keep `summarizeAt`
+strictly below every cap, which is why the stages and the caps move together. The
+measurement behind the 0.4.2 numbers is in
+[`docs/issue-b-thresholds.md`](docs/issue-b-thresholds.md).
 
 ### `onLimit` — what happens at the gate
 
@@ -302,8 +317,8 @@ at which point `ctx.tools.guard` is the genuine method.
         window: 16                  # recent calls per agent that participate
         onLimit: ask                # ask | deny — what happens AT `limits`
         localHosts: deny            # deny | allow — see "Local addresses"
-        warnAt: 3                   # stage 1; 0 / negative / null disables it
-        summarizeAt: 6              # stage 2; 0 / negative / null disables it
+        warnAt: 7                   # stage 1; 0 / negative / null disables it
+        summarizeAt: 11             # stage 2; 0 / negative / null disables it
         includeLocal: false         # whether local hosts feed the `host:` measure
         previewChars: 400           # truncation for quoted fingerprints
         resultPreviewChars: 800     # truncation for the quoted previous result
@@ -316,11 +331,11 @@ at which point `ctx.tools.guard` is the genuine method.
           open-data.canada.ca: open.canada.ca
         limits:                     # merged over the defaults; null = uncapped
           # `limits` IS the stage-3 threshold — there is no `gateAt`.
-          exact: 9
-          cmd: 9
-          net: 9
-          sink: 9
-          host: 9                   # new in 0.4.0: one target, many distinct requests
+          exact: 12
+          cmd: 12
+          net: 12
+          sink: 12
+          host: 16                  # new in 0.4.0: one target, many distinct requests
           site: null                # volume budgets: off by default, see "Tuning"
           'family:http-fetch': null
           'verb:curl': null
@@ -359,7 +374,7 @@ that isn't yet in the composed tree.)
 
 The table mixes *precise* caps with *broad* ones, and the difference matters:
 
-- **precise, action-scoped, cap 9**: `exact`, `cmd`, `net`, `sink`. These fire
+- **precise, action-scoped, cap 12**: `exact`, `cmd`, `net`, `sink`. These fire
   only when the same action actually happens again, and they are what catches
   loops. Every lower value was tried against real work and each produced a false
   positive. A cap of 2 leaves no room for the most common *non-loop* repeat: the
@@ -371,9 +386,14 @@ The table mixes *precise* caps with *broad* ones, and the difference matters:
   because `sink:` is path-only **by design** — its whole job is to catch one
   destination rewritten with ever-changing content — so a shell cycle that writes
   the same file several times while iterating looked exactly like a loop. At 5 an
-  ordinary edit/test cycle fits. 0.4.0 moves the cap to **9** because two advisory
-  stages now sit underneath the gate — 3 warns, 6 demands a summary, 9 gates — so
-  the hard break moves *later* instead of firing at the first threshold.
+  ordinary edit/test cycle fits. 0.4.0 moved the cap to **9** because two advisory
+  stages now sit underneath the gate — 3 warned, 6 demanded a summary, 9 gated —
+  so the hard break moved *later* instead of firing at the first threshold. 0.4.2
+  retunes the stages and the cap together to **7 / 11 / 12**: measurement over 109
+  recorded sessions showed the old stages firing on runs that succeeded (two
+  known-good runs peaked at 4 and 6 repeats, both at or above the old
+  `warnAt: 3`) and 10% of real sessions reaching a peak of 13, above the old cap
+  of 9.
 - **the new `host:` measure is active, and it is not a volume budget**: it counts
   one normalized host, with no path and no query, so it fires when an agent keeps
   going back to the same target with genuinely *different* requests. That is a
@@ -381,9 +401,13 @@ The table mixes *precise* caps with *broad* ones, and the difference matters:
   so every page of one API is a different resource, and `site:` merges unrelated
   services. It is reconciled with the disabled volume budgets by the mechanism
   around it: its two lower stages are advisory, and its gate is operator-gated
-  (and fail-closed when unattended), rather than an automatic volume cap. The
-  measurement that set the threshold is in
-  [`docs/convergence-guard.md`](docs/convergence-guard.md).
+  (and fail-closed when unattended), rather than an automatic volume cap. Its cap
+  is **16** — the whole window — rather than the 12 the action-identity measures
+  use, because `host:` is the coarser measure: it discards the path, so
+  installing many packages from one mirror and re-fetching one broken URL look
+  identical to it, and it accounted for 25 of the 48 `(session, fingerprint)`
+  pairs that reached a cap under the old defaults. The measurement is in
+  [`docs/issue-b-thresholds.md`](docs/issue-b-thresholds.md).
 - **not counter-based at all**: file operations. There is no `readpath` or
   `writepath` limit. A file action is identified by its **position** through
   `exact:` — the same file at the same offset, or the same replacement string, is
@@ -482,20 +506,21 @@ Two things worth knowing:
 npm test          # node --test test/breaker.test.js
 ```
 
-48 tests, no model or endpoint required. The suite mirrors the v2 spec's table
+50 tests, no model or endpoint required. The suite mirrors the v2 spec's table
 (T1 ping-pong, T2/T3 description decoys, T4 unrelated calls, T5 curl↔wget, T6
 exclusion, T7 per-agent isolation, T8 volatile flags, T9 normalizer units, T10
 read paths, T11 denied calls still spend budget), adds the plugin-level wiring
 (T12: the guard denies, quotes the previous result, survives a plugin notice,
 resets on a human turn; T12c: the fail-loud config contract), and documents the
-shipped defaults (T14: the 0.4.0 table; T14b/T14c: volume is not a loop signal,
+shipped defaults (T14: the 0.4.2 table; T14b/T14c: volume is not a loop signal,
 `?page=N` stays a new resource while `host:` is the convergence measure that
 accumulates across pages).
 
 The 0.4.0 escalation has its own tests:
 
-- `T24` — the three stages fire at exactly 3, 6 and 9 on one measure, and once
-  per crossing rather than on every later call;
+- `T24` — the three stages fire at `warnAt`, `summarizeAt` and the cap on one
+  measure, with the assertions derived from the defaults rather than hard-coded
+  (7, 11 and 12), and once per crossing rather than on every later call;
 - `T25` — `host:` accumulates on a public host across distinct paths and queries,
   while local hosts are excluded from it by default;
 - `T26` — an exemption covers only the measures that hit;
@@ -540,8 +565,8 @@ Qwen3.8-27B on llama.cpp, in a throwaway `DSH_HOME`:
 These runs predate 0.4.0, so the counts reflect the cap in force at the time (2,
 then 5) and there is no `host:` measure yet. What they establish is the
 *collision*: the alias spelling, the churning `--max-time` and the decoy
-`description` do not make a new action. Under the 0.4.0 defaults the same calls
-still collide, and the break lands at 9 with the two advisory stages before it.
+`description` do not make a new action. Under the 0.4.2 defaults the same calls
+still collide, and the break lands at 12 with the two advisory stages before it.
 
 ### Real-pipeline check (no model needed)
 
@@ -597,8 +622,8 @@ COMPAT: PASS (2 executed, 2 denied, cap=3)
 ```
 
 The attempt counts follow the cap the script derives from `DEFAULTS`, so the
-0.4.0 defaults move the whole trajectory (cap 9) without any change to the
-assertion shape.
+0.4.2 defaults move the whole trajectory (cap 12, `host` 16) without any change
+to the assertion shape.
 
 ## Releasing
 
@@ -636,7 +661,7 @@ the npm CLI explicitly because Node 22 bundles an older one.
 
 **Verified**
 
-- **Deterministic suite** (`npm test`) — 48 tests covering the full fingerprint
+- **Deterministic suite** (`npm test`) — 50 tests covering the full fingerprint
   matrix, decoy stripping, host folding, sink extraction, the `host:` measure and
   the three escalating stages, window arithmetic, per-agent isolation, the
   user-message reset, the gate's ask/deny outcomes, and the fail-loud config

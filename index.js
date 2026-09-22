@@ -17,9 +17,15 @@
  * Repeating a MEASURE (a fingerprint identity — `exact:`, `cmd:`, `net:`,
  * `host:`, `sink:`, …) inside the same human turn escalates:
  *
- *   1. `warnAt` (3)      — a light advisory: you are repeating; consider another route
- *   2. `summarizeAt` (6) — a demand: summarise progress; list untried alternatives
- *   3. `limits` (9)      — the gate: ask the operator (`onLimit: ask`) or deny
+ *   1. `warnAt` (7)      — a light advisory: you are repeating; consider another route
+ *   2. `summarizeAt` (11)— a demand: summarise progress; list untried alternatives
+ *   3. `limits` (12)     — the gate: ask the operator (`onLimit: ask`) or deny
+ *                          (`host` is 16: the coarser measure needs more evidence)
+ *
+ * The three move together. `lib/defaults.js` is the ground truth for the numbers and
+ * `docs/issue-b-thresholds.md` for the measurement behind them; the short version is
+ * that the gate fires before the advisory, so a stage at or above every cap can never
+ * be delivered.
  *
  * Stages 1 and 2 are ADVISORY and cannot be delivered from the guard, which
  * returns `string | undefined` and nothing else. They ride `tools/post-execute`
