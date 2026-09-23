@@ -5,6 +5,19 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-22
+
+### Fixed
+
+- **No doubled space in the failure descriptions.** `suffix` carried its own leading space
+  and was prefixed with another, so a Python crash read as `the script raised 
+  urllib.error.URLError` and a curl failure as `curl failed (code  6)`. The same shape was
+  already present in the timeout branch (`the call timed out ( 30000ms)`) and had gone
+  unnoticed because that wording is rarely seen. `describeFailure` now builds each string
+  explicitly, and a test checks every reason with and without a detail for doubled spaces
+  and stray parenthesis spacing — the bug hid in the branches nobody read.
+
+
 ## [0.5.1] - 2026-09-22
 
 ### Fixed
@@ -601,7 +614,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.4.1...v0.4.2

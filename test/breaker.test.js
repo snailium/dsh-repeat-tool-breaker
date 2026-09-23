@@ -1295,3 +1295,19 @@ test('T42: the failure track catches the reported spin, end to end', async () =>
   assert.match(advice, /host:archive-api\.open-meteo\.com/, 'the host carries the streak')
   assert.doesNotMatch(advice, /exact:bash/, 'and not the command line')
 })
+
+test('T43: no failure description contains a doubled space', () => {
+  // `suffix` used to carry its own leading space and be prefixed again, which read as
+  // "the script raised  urllib.error.URLError" and "(code  6)". Every reason is
+  // checked, with and without a detail, because the bug hid in the branches nobody read.
+  const reasons = ['exit', 'http', 'timeout', 'signal', 'sandbox', 'error', 'exception', 'curl', 'other']
+  for (const reason of reasons) {
+    for (const detail of ['', '7']) {
+      const text = describeFailure({ reason, detail })
+      assert.ok(text.length > 0, `${reason} must describe something`)
+      assert.doesNotMatch(text, / {2}/, `doubled space in: ${JSON.stringify(text)}`)
+      assert.doesNotMatch(text, /\(\s|\s\)/, `stray parenthesis spacing in: ${JSON.stringify(text)}`)
+    }
+  }
+  assert.equal(describeFailure(null), '')
+})

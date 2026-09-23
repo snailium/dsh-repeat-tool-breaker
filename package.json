@@ -1,6 +1,6 @@
 {
   "name": "dsh-repeat-tool-breaker",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Escalating repeat detection for dsh: a synchronous ctx.tools.guard gate that counts semantic fingerprints (exact/cmd/net/host/sink) over a per-agent sliding window, warns at 7, demands a progress summary at 11, and gates at 12 (16 for the coarser host: measure), plus a second track on consecutive failures (advisory at 3, block at 5) — asking the operator for a turn-scoped exemption instead of only blocking.",
   "keywords": [
     "dsh",
