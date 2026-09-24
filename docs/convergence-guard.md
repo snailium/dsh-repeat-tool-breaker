@@ -196,6 +196,22 @@ Restricting the fallback to shells is what makes that safe: a fetched page menti
 "HTTP Error 400", or a `read` of a Python file containing `ValueError:`, is never read as a
 failure.
 
+A fifth shape (0.5.3) needs the COMMAND as well as the output, so the classifier takes both.
+When a shell command asked curl for the status (`-w "%{http_code}"`), a leading 4xx/5xx in
+the output is the status **by construction** — that is how a model checks an endpoint by
+hand, and it is invisible otherwise: curl exits 0 for a 404 without `--fail`, and the output
+is a bare number. Anchored to the start, because the same output often carries a byte count
+(`153226 /tmp/…`) whose digits contain something like `532`.
+
+That last one came from a session the guard did not touch at all: **322 tool calls, one
+warning, one failure detected.** 211 commands used the write-out and 207 of their outputs
+led with a 4xx/5xx. The occurrence track could not have caught it and the reason is
+structural, not a threshold: the model rotated among four or five hosts, so in a 16-call
+window no single fingerprint stayed long enough to reach the cap — its peaks were 8, 6, 6,
+6. With the rule, one of its fingerprints shows **101 consecutive failures**. Rotating
+targets are precisely what the failure track exists for; it only has to be able to see the
+failures.
+
 Two things are deliberately NOT failures: `aborted` (external to the model's choice) and a
 background job that started.
 

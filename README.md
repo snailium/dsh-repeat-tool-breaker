@@ -195,6 +195,15 @@ its own HTTP error exits 0 too. So for a shell the text is the remaining evidenc
   carried on;
 - `curl: (n)` — curl's own diagnostic.
 
+One more case needs the **command**, not just the output, so `classifyFailure` takes it:
+when a shell command asked curl for the status (`-w "%{http_code}"` or
+`%{response_code}`), a leading 4xx/5xx in the output **is** the status by construction.
+That is how a model checks an endpoint by hand — curl exits 0 for a 404 unless it was
+given `--fail`, and the output is a bare number that nothing else would recognise. The
+anchor is deliberate: the same output often carries a byte count
+(`153226 /tmp/…`) whose digits contain something like `532`, and a plain `wc -c`
+number without the write-out request is not a status.
+
 Every other tool answers through its structured value, so its prose is never
 guessed at: that is what keeps a fetched page, or a `read` of a Python file
 containing the word `ValueError:`, from being read as a failure.

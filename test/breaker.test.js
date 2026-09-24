@@ -1311,3 +1311,44 @@ test('T43: no failure description contains a doubled space', () => {
   }
   assert.equal(describeFailure(null), '')
 })
+
+test('T44: curl asked for the status, so a leading 4xx IS the status', () => {
+  // The shape a model produces when it checks an endpoint by hand:
+  //   curl -sL "URL" -o /dev/null -w "%{http_code}"
+  // curl exits 0 (a 404 is a successful transaction without --fail), the output is a
+  // bare number, and no other marker matches. The COMMAND is the evidence: it asked
+  // for the status, so the number is the status by construction.
+  const cmd = 'curl -sL "https://weather.gc.ca/x.html" -o /dev/null -w "%{http_code}"'
+  const leading = result({ kind: 'foreground', exitCode: 0, signal: null, timedOut: false }, {
+    content: [{ type: 'text', text: '404 https://weather.gc.ca/x.html\n' }],
+  })
+  const failure = classifyFailure(leading, { shell: true, command: cmd })
+  assert.equal(failure?.reason, 'http')
+  assert.equal(failure.detail, '404')
+
+  // A 200 is a success, and the byte count in the same output must not be mistaken
+  // for a status (the string "153226" contains "532").
+  const okOut = result({ kind: 'foreground', exitCode: 0, signal: null, timedOut: false }, {
+    content: [{ type: 'text', text: '200 https://climate.weather.gc.ca/x.html\n153226 /tmp/ecc.html\n' }],
+  })
+  assert.equal(classifyFailure(okOut, { shell: true, command: cmd }), null)
+
+  // Without the write-out request, a bare number is just a number: `wc -c` prints one.
+  const wc = result({ kind: 'foreground', exitCode: 0, signal: null, timedOut: false }, {
+    content: [{ type: 'text', text: '404 /tmp/some-file.txt' }],
+  })
+  assert.equal(classifyFailure(wc, { shell: true, command: 'wc -c /tmp/some-file.txt' }), null)
+  assert.equal(classifyFailure(wc, { shell: true }), null, 'no command, no rule')
+})
+
+test('T45: the write-out rule needs the status FIRST, not anywhere', () => {
+  // `-w` puts the value where the format string says; the convention this rule
+  // supports is the leading position. A 4xx later in the body must not match.
+  const body = result({ kind: 'foreground', exitCode: 0, signal: null, timedOut: false }, {
+    content: [{ type: 'text', text: 'Here is a page that mentions 404 in passing.\n200' }],
+  })
+  assert.equal(
+    classifyFailure(body, { shell: true, command: 'curl -s -w "%{http_code}" https://x.example.com/' }),
+    null,
+  )
+})

@@ -5,6 +5,40 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-09-22
+
+### Fixed
+
+- **A 404 printed by the model's own `curl -w "%{http_code}"` is now a failure.** Reported
+  from a live session that ran **322 tool calls and was blocked by nothing**. The guard
+  warned once (at `warnAt`, on one host) and the model then continued for another ~300
+  calls; the failure track saw exactly **one** failure in the whole run.
+
+  The shape: `curl -sL "URL" -o /dev/null -w "%{http_code}"`. curl exits **0** — a 404 is a
+  successful transaction unless `--fail` was given — and the output is a bare number
+  (`404 https://…`), which none of the existing markers match. 211 of that session's 322
+  commands used the write-out, and 207 of their outputs led with a 4xx/5xx.
+
+  The COMMAND is the evidence, so it is now passed to the classifier: when a shell command
+  asked curl for `%{http_code}` (or `%{response_code}`), a **leading** 4xx/5xx in the output
+  is the status by construction. Anchored to the start, which is where `-w` puts it — the
+  same output often carries a byte count (`153226 /tmp/…`) whose digits contain something
+  like `532`, and a `wc -c`-style number without the write-out request is not a status.
+
+  Measured on the same 140 sessions: the rule takes the ≥3-failure sessions from 13 to 15
+  and the ≥5 from 5 to 6, with **zero known-good runs caught**. It adds exactly two
+  sessions, one of which is the reported one — whose longest failure streak goes from 1 to
+  **101 consecutive 404s** on one host.
+
+### Notes
+
+- The occurrence track could not have caught that session, and this is structural rather
+  than a threshold problem: the model rotated among four or five hosts, so with a 16-call
+  window no single fingerprint stayed long enough to reach the cap of 12. Its peaks were
+  8, 6, 6, 6. Rotating targets are what the failure track is for — and it needs to be able
+  to see the failures, which is what this release fixes.
+
+
 ## [0.5.2] - 2026-09-22
 
 ### Fixed
@@ -614,7 +648,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.4.2...v0.5.0

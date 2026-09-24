@@ -320,7 +320,7 @@ export function apply(ctx, config = {}) {
   // downstream block's decision is preserved and the context composes with it
   // instead of replacing it.
   const onPost = ctx.on('tools/post-execute', async (exec, result, next) => {
-    const { name, agent } = parts(exec)
+    const { name, agent, args } = parts(exec)
     let failureAdvisory
     if (agent !== null && tracked(name)) {
       const pending = pendingAsk.get(exec)
@@ -344,7 +344,10 @@ export function apply(ctx, config = {}) {
         // `shell` gates the text fallback: a shell's exit code is masked by
         // pipelines, so its text is the only remaining evidence; other tools answer
         // through their structured value and must not be guessed at from prose.
-        const failure = classifyFailure(result, { shell: isShell(name) })
+        const failure = classifyFailure(result, {
+          shell: isShell(name),
+          command: typeof args?.command === 'string' ? args.command : '',
+        })
         const warned = tracker.noteOutcome(agent, fps, failure)
         if (warned.length > 0) {
           // Name the longest streak. A tie is broken by `measureRank` for the same
