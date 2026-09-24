@@ -86,9 +86,10 @@ import {
 } from './lib/message.js'
 import { classifyFailure } from './lib/failure.js'
 import { createFetchFileState, fetchFileToolState, registerFetchFileTool } from './lib/fetch-file.js'
+import { registerSettings, settingsState } from './lib/settings.js'
 import { createTracker, hasUserMessage } from './lib/window.js'
 import { mergeDefaults, validateCfg } from './lib/defaults.js'
-import { firstVerb } from './lib/normalize.js'
+import { firstVerb, remoteFetchVerbs } from './lib/normalize.js'
 
 /** Stable plugin identifier. */
 export const name = 'repeat-tool-breaker'
@@ -235,17 +236,23 @@ export function apply(ctx, config = {}) {
     // asynchronous (`ctx.inject`), so early calls in a boot are deliberately allowed
     // until the tool exists.
     if (fetchFile.registered !== true) return false
-    // An incidental fetch by a local tool (a package manager, `git`) is left alone:
-    // there is no fetch-to-file equivalent, so blocking it removes the capability
-    // instead of redirecting it. See `shellHttpAllow`.
-    if (cfg.shellHttpAllow.length > 0 && cfg.shellHttpAllow.includes(firstVerb(command))) return false
+
     const remote = local !== true && fps.some((fp) => fp.startsWith('host:'))
     const httpVerb = fps.includes('family:http-fetch')
-    if (remote || (httpVerb && local !== true)) return true
-    if (cfg.blockLocalHttp === true && local === true) {
-      return fps.some((fp) => fp.startsWith('net:'))
-    }
-    return false
+    const localHttp =
+      cfg.blockLocalHttp === true && local === true && fps.some((fp) => fp.startsWith('net:'))
+    if (!remote && !(httpVerb && local !== true) && !localHttp) return false
+
+    // The exemption is per SEGMENT, not per command: a fetch is exempt only when
+    // EVERY segment that targets a remote URL runs an allowlisted verb. Attributing
+    // the fetch to the whole string's first verb would read `cd /x && git clone
+    // https://…` as `cd` and refuse a clone that is meant to be allowed.
+    if (cfg.shellHttpAllow.length === 0) return true
+    const fetchVerbs = remoteFetchVerbs(command, cfg.hostAliases)
+    if (fetchVerbs.length > 0) return !fetchVerbs.every((verb) => cfg.shellHttpAllow.includes(verb))
+    // No URL anywhere but an HTTP verb is present (`curl --config …`): fall back to
+    // the string's own verb.
+    return !cfg.shellHttpAllow.includes(firstVerb(command))
   }
 
   /**
@@ -365,6 +372,30 @@ export function apply(ctx, config = {}) {
     return undefined
   }
 
+  // The settings box, when the profile has a settings provider. The resolved value is
+  // written back onto `cfg`, which is what makes it LIVE: `stageAdvisory` and the
+  // tracker both read `cfg` at call time, so a change in the UI applies to the next
+  // call without touching either of them.
+  const SETTINGS_KEYS = [
+    'blockShellHttp',
+    'blockLocalHttp',
+    'shellHttpAllow',
+    'warnAt',
+    'summarizeAt',
+    'failWarnAt',
+    'failLimit',
+  ]
+  registerSettings(
+    ctx,
+    cfg,
+    Object.fromEntries(SETTINGS_KEYS.map((key) => [key, cfg[key]])),
+    (resolved) => {
+      for (const key of SETTINGS_KEYS) {
+        if (resolved?.[key] !== undefined) cfg[key] = resolved[key]
+      }
+    },
+  )
+
   // `web_fetch_file` is registered only when the profile actually has the web
   // service. It is the replacement a denial points at, so the guard must know
   // whether it exists -- naming a tool a profile does not have is worse than
@@ -465,6 +496,6 @@ export function apply(ctx, config = {}) {
   }
 }
 
-export { fetchFileToolState, isTracked }
+export { fetchFileToolState, isTracked, settingsState }
 
 export default { name, inject, apply }

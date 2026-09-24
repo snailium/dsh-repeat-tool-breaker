@@ -37,7 +37,8 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js",
-    "test:pipeline": "node test/pipeline.e2e.mjs"
+    "test:pipeline": "node test/pipeline.e2e.mjs",
+    "link:harness": "bash scripts/dev-link-harness.sh"
   },
   "engines": {
     "node": ">=20"
@@ -49,5 +50,8 @@
   "homepage": "https://github.com/snailium/dsh-repeat-tool-breaker#readme",
   "bugs": {
     "url": "https://github.com/snailium/dsh-repeat-tool-breaker/issues"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.2"
   }
 }

@@ -31,9 +31,26 @@ All notable changes to this project are documented here. This project adheres to
   - **Local addresses** (`blockLocalHttp`, default off). `web_fetch_file` reuses dsh's
     own retrieval and inherits its SSRF guard, so it CANNOT reach loopback or RFC1918.
     Refusing local fetches would leave no way to do them at all.
-  - **Verbs whose network use is incidental** (`shellHttpAllow`): `git`, `npm`, `docker`,
-    `pip`, `apt`, … A `git clone` has no fetch-to-file equivalent. Set the list to `[]`
-    to refuse those too.
+  - **Verbs whose network use is incidental** (`shellHttpAllow`), default `['git',
+    'docker']`. That default is EVIDENCE-LED, not guessed: a scan of every recorded
+    session — 11006 shell calls, 3392 fetching a remote URL — found exactly three verbs
+    that make a network request, `curl` (3012), `git` (95) and `docker` (6). `curl` is
+    the block's target; the other two have no fetch-to-file equivalent, so refusing them
+    removes a capability. `wget`, `npm`, `pip`, `apt`, `gh` and the rest never carried a
+    remote URL in the corpus and are NOT exempted on speculation — add one from the
+    settings box when a real workflow needs it. Set the list to `[]` to refuse all.
+
+  The exemption is attributed PER COMMAND SEGMENT, not per string: `cd /x && git clone
+  https://…` otherwise reads as `cd`, and a fetch hidden behind a prefix verb would be
+  refused or exempted by accident.
+
+- **A settings namespace, so the policy is editable without editing YAML.** The plugin
+  registers `<namespace>` through `ctx.settings.register`, which is what puts a box under
+  Settings → Plugins: `dsh-client-ui-settings-plugins` renders the fields from the
+  schema, and the default `applies: 'live'` means a change takes effect on the next call.
+  The schema's defaults are built FROM the live config, so the box and `lib/defaults.js`
+  cannot drift. Registration is non-blocking, and a failure is recorded in
+  `settingsState` rather than swallowed.
 
   The known hole is asserted rather than pretended, in T47b: a guard sees the command
   text and nothing else, so a fetch inside a file invoked by a NON-http verb

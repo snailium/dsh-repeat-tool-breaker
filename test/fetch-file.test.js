@@ -249,3 +249,109 @@ test('F13: fetch-file settings are validated fail-loud', () => {
   assert.throws(() => validateFetchFileCfg({ outputDir: 'x', maxBytes: 1.5 }), /maxBytes/)
   assert.doesNotThrow(() => validateFetchFileCfg({ outputDir: 'fetched', maxBytes: 1024 }))
 })
+
+// ---------------------------------------------------------------------------
+// The settings namespace: the box an operator uses to extend shellHttpAllow
+// ---------------------------------------------------------------------------
+
+/**
+ * A settings-provider double, shaped like `ctx.settings` in dsh-settings: `register`
+ * returns a scope whose `get`/`watch` the plugin uses, and the schema is CALLED to
+ * resolve a value — which is the plugin's proof that a real schemastery schema is
+ * required rather than a hand-written validator.
+ */
+function fakeSettingsService({ base }) {
+  const watchers = []
+  let resolved = null
+  return {
+    set(next) {
+      resolved = next
+      for (const cb of watchers) cb()
+    },
+    registered: null,
+    service: {
+      register(ns, schema, options) {
+        this.__ns = ns
+        this.__schema = schema
+        resolved = schema(options.base)
+        return {
+          get: () => resolved,
+          watch: (cb) => {
+            watchers.push(cb)
+            return () => {}
+          },
+          update: async () => {},
+        }
+      },
+    },
+    get resolved() {
+      return resolved
+    },
+  }
+}
+
+test('F14: the settings box registers, and a change applies live', async () => {
+  const { SETTINGS_NAMESPACE, buildSettingsSchema, registerSettings, settingsState } = await import(
+    '../lib/settings.js'
+  )
+  const { default: z } = await import('@deepseek-ai/schemastery')
+  const cfg = { ...FETCH_FILE_DEFAULTS, blockShellHttp: true, blockLocalHttp: false, shellHttpAllow: ['git', 'docker'] }
+  const schema = buildSettingsSchema(z, cfg)
+
+  // The defaults come from cfg, so the box and lib/defaults.js cannot drift.
+  const defaults = schema({})
+  assert.equal(defaults.blockShellHttp, true)
+  assert.deepEqual(defaults.shellHttpAllow, ['git', 'docker'])
+
+  const double = fakeSettingsService({ base: {} })
+  const seen = []
+  const ctx = {
+    inject: (deps, cb) => {
+      assert.deepEqual(deps, ['settings'])
+      cb({ settings: double.service })
+      return () => {}
+    },
+  }
+  registerSettings(ctx, cfg, { shellHttpAllow: ['git', 'docker'] }, (value) => seen.push(value))
+  await new Promise((resolve) => setTimeout(resolve, 60))
+
+  assert.equal(settingsState.registered, true, `registration failed: ${settingsState.reason}`)
+  assert.equal(double.service.__ns, SETTINGS_NAMESPACE, 'namespace must be lowercase-hyphenated')
+  assert.equal(typeof double.service.__schema, 'function', 'dsh-settings CALLS the schema to resolve')
+  assert.equal(seen.length, 1, 'the resolved value is delivered once at registration')
+
+  // A change in the box re-delivers, which is what makes the value live.
+  double.set({ ...defaults, shellHttpAllow: ['git', 'docker', 'npm'] })
+  assert.equal(seen.length, 2)
+  assert.deepEqual(seen[1].shellHttpAllow, ['git', 'docker', 'npm'])
+})
+
+test('F15: no settings provider is a soft failure, not a silent one', async () => {
+  const { registerSettings, settingsState } = await import('../lib/settings.js')
+  settingsState.registered = false
+  settingsState.reason = ''
+  // A context whose `inject` never fires: the plugin keeps working from its patch
+  // config, and the state records WHY there is no box rather than leaving a mystery.
+  registerSettings({ inject: () => () => {} }, {}, {}, () => {})
+  assert.equal(settingsState.registered, false)
+  // And a context with no scoped inject at all is also tolerated.
+  settingsState.reason = ''
+  registerSettings({ get: () => undefined }, {}, {}, () => {})
+  assert.match(settingsState.reason, /no scoped inject/)
+})
+
+test('F16: the published package still ships its entry point', async () => {
+  // A programmatic rewrite of package.json silently dropped `index.js` from `files`,
+  // which would have published a package with no entry point at all — broken on
+  // install, and invisible until someone installed it. This is the cheapest possible
+  // guard against that class of mistake.
+  const { readFileSync } = await import('node:fs')
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  for (const entry of ['index.js', 'lib', 'cordis.patch.yml']) {
+    assert.ok(manifest.files.includes(entry), `\`files\` must include ${entry} (got ${JSON.stringify(manifest.files)})`)
+  }
+  assert.equal(manifest.main, 'index.js')
+  assert.equal(manifest.exports['.'].default, './index.js')
+  // The bundle patch is how a profile mounts the plugin at all.
+  assert.equal(manifest.dsh.bundle.patch, './cordis.patch.yml')
+})

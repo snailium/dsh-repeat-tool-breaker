@@ -1404,9 +1404,11 @@ test('T48: local addresses, allowlisted verbs and ordinary commands are untouche
     // blocking them would be a lost capability rather than a redirect
     'curl -s http://127.0.0.1:3080/',
     'curl -s http://192.168.111.90:3080/healthz',
-    // incidental network use with no fetch-to-file equivalent
+    // incidental network use with no fetch-to-file equivalent — and these two are the
+    // EVIDENCE-LED default, from a scan of every recorded session: `git` (95 calls) and
+    // `docker` (6) were the only non-curl verbs that ever fetched a remote URL.
     'git clone https://github.com/a/b /tmp/b',
-    'npm i git+https://github.com/a/b',
+    'docker run --rm alpine sh -c "true"',
     // not a fetch at all
     'grep -rn foo /workspace/src',
     'ls -la /tmp',
@@ -1414,6 +1416,20 @@ test('T48: local addresses, allowlisted verbs and ordinary commands are untouche
   for (const command of allowed) {
     assert.equal(verdict(guards, bash(command)), undefined, `must be allowed: ${command}`)
   }
+})
+
+test('T48b: a verb is exempt BECAUSE it is listed, and adding one is the point', () => {
+  // `npm i git+https://…` is NOT in the evidence-led default, so it is refused — and
+  // that is deliberate rather than an oversight: the corpus never showed it, and
+  // guessing an exemption for a verb nobody used is speculation. Adding it is a
+  // settings change, which is what the Settings → Plugins box is for.
+  const strict = fakeCtx({ web: true })
+  apply(strict.ctx, {})
+  assert.equal(typeof verdict(strict.guards, bash('npm i git+https://github.com/a/b')), 'string')
+
+  const extended = fakeCtx({ web: true })
+  apply(extended.ctx, { shellHttpAllow: ['git', 'docker', 'npm'] })
+  assert.equal(verdict(extended.guards, bash('npm i git+https://github.com/a/b')), undefined)
 })
 
 test('T49: the block is a flat refusal — it never asks, and it fires on the FIRST call', () => {
