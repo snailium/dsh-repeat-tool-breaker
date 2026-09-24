@@ -3,6 +3,37 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-09-24
+
+### Fixed
+
+- **`grep` is no longer refused when its PATTERN contains a URL.** `shellHttpAllow` gains
+  `grep` and `rg`. A grep command containing an address is searching text *for* that
+  address — grep has no network stack, so no amount of it can fetch anything. Refusing it
+  did not redirect a fetch; it blocked a read. Worse, the refusal message then asserted
+  that the call "fetches over HTTP", which is simply false, and told the model to use
+  `web_fetch_file` for an operation that tool cannot perform. A guard that lies about why
+  it fired is worse than one that is narrow.
+
+  The line is **pattern-position tools**, not "any verb without a network stack": `echo`,
+  `head`, `cat`, `sed` and `awk` stay out, because the corpus contains commands where one
+  of those merely PRINTS a URL that a later segment then downloads, and there the
+  exemption would swallow a real fetch. `tools/allowlist-candidate-scan.mjs` reports
+  exactly that split: exempting `echo`/`head` flips 3 refusals and all 3 name a downloader;
+  exempting `grep` flips none.
+
+  **New residual, asserted in T48f rather than pretended:** `grep -oE '<url>' f | xargs curl`
+  is now allowed, because the only segment carrying an address is the exempt grep and
+  `xargs` is not an HTTP verb — so the no-URL clause does not fire either. It is narrow,
+  and the block is a steering mechanism rather than a containment boundary, but it is new
+  and it is written down. The neighbouring variable form
+  (`U=$(grep -oE '<url>' f); curl -s "$U"`) is still refused, by the no-URL clause, which
+  falls back to the string's own first verb.
+
+  Over the corpus this changes **no** decision: whenever grep carried a remote URL, another
+  verb in the same command was refused anyway. The fix is about the rule being *correct*,
+  and about not issuing a denial whose stated reason is untrue.
+
 ## [0.6.1] - 2026-09-24
 
 Two locality bugs, both of which made the 0.6.0 shell-HTTP block refuse a call it had
@@ -49,8 +80,9 @@ The answer for `grep` came back as **zero**. The 0.6.1 fix reduced the corpus's
 grep-with-a-remote-URL calls from 38 to 3, and all 3 are refused for a different verb
 anyway — so exempting `grep` would change no decision at all. The only verbs that flip
 are `echo` (2) and `head` (1), and all three of those commands also name a real
-downloader; exempting them would open the hole the block exists to close. Neither is
-added.
+downloader. **0.6.2 exempts `grep`/`rg` anyway** — not because the corpus demanded it, but
+because the rule was wrong: see the 0.6.2 entry above. `echo` and `head` remain out, and
+for them the measurement is the reason.
 
 ## [0.6.0] - 2026-09-24
 
@@ -830,7 +862,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.2...v0.5.3

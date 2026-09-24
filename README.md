@@ -473,9 +473,11 @@ at which point `ctx.tools.guard` is the genuine method.
         # Refuse HTTP made from the shell; send the model to web_fetch_file instead.
         blockShellHttp: true        # semantic: any shell call targeting a non-local URL; fail-safe (no-op without the tool)
         blockLocalHttp: false       # local addresses stay in the shell — the fetch tool cannot reach them
-        shellHttpAllow:             # verbs whose network use is incidental, with no fetch-to-file equivalent
-          - git
-          - docker
+          shellHttpAllow:             # verbs the block leaves alone — see "Should verb X be exempt?"
+            - git
+            - docker
+            - grep
+            - rg
         # web_fetch_file — registered only when the profile has ctx.web
         outputDir: fetched          # relative to the workspace root; /tmp does NOT survive between shell calls
         maxBytes: 8388608           # our own cap; the web provider caps first
@@ -580,15 +582,15 @@ bundle is simply never requested, and the namespace stays editable through
 > The measurement tools below live in the **source repository**, not in the published
 > package — `files` ships only the plugin itself. Clone the repo to run them.
 
-The default `['git', 'docker']` is a claim about what agents actually do, so it ships with
-the tool that measures it. Point the scan at one or more `sessions/` directories and it
+The default `['git', 'docker', 'grep', 'rg']` is split across two reasons, and the tool
+below measures the first. Point the scan at one or more `sessions/` directories and it
 replays every recorded shell call through this plugin's own detector:
 
 ```bash
 node tools/shell-http-allowlist-scan.mjs ~/.dsh/sessions ~/harness-home/sessions
 
 # logs=225 shell_calls=27539 calls_with_a_remote_url=4457
-# allowlist=["git","docker"]
+# allowlist=["git","docker","grep","rg"]
 #
 # verb                      segments  exempt
 # curl                          3424  NO
@@ -633,18 +635,34 @@ It reports, for each non-fetching verb, how many refused calls would flip to all
 that verb were exempted — and how many of those also name a downloader elsewhere in the
 command, which makes the exemption a **bypass** rather than a fix.
 
-As of 0.6.1, over 28,333 shell calls:
+As of 0.6.2, over 28,333 shell calls:
 
-| verb | calls that would flip | of those, ones that also fetch |
-|---|---|---|
-| `grep` | **0** | — |
-| `echo` | 2 | 2 |
-| `head` | 1 | 1 |
+| verb | calls that would flip | of those, ones that also fetch | verdict |
+|---|---|---|---|
+| `grep` | **0** | — | **exempt** (0.6.2) — see below |
+| `echo` | 2 | 2 | refused: the exemption would swallow a real fetch |
+| `head` | 1 | 1 | refused, same reason |
 
-`grep` flips nothing: it is never the only refused verb in a command, so exempting it
-would change no decision at all. The verbs that do flip are all commands that also run a
-real downloader — exempting them would open exactly the hole the block exists to close.
-**None of the three is added.**
+`grep` flips nothing, because it is never the only refused verb in a command. It is
+exempted **anyway**, and the measurement is not the reason — the rule is:
+
+> A verb whose PRIMARY ARGUMENT is a pattern is searching text for that address. `grep`
+> and `rg` have no network stack, so no amount of them can fetch. Refusing one does not
+> redirect a fetch; it blocks a read, and the denial then claims the call "fetches over
+> HTTP", which is false.
+
+The measurement decides the *other* direction: `echo`, `head`, `cat`, `sed` and `awk` stay
+out precisely because their flips all name a real downloader. So the line is
+**pattern-position tools**, not "everything without a network stack".
+
+Two consequences worth knowing:
+
+- **A new residual.** `grep -oE '<url>' f | xargs curl` is now allowed: the only segment
+  carrying an address is the exempt grep, and `xargs` is not an HTTP verb so the no-URL
+  clause misses it too. Narrow, and asserted in T48f. The variable form
+  (`U=$(grep -oE '<url>' f); curl -s "$U"`) is still refused, by the no-URL clause.
+- **`shellHttpAllow: []` still refuses everything**, including `grep` — the off-switch is
+  unchanged.
 
 #### Not in the box
 

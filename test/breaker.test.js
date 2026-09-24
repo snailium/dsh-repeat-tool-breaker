@@ -1462,13 +1462,18 @@ test('T48c: a regex-escaped URL is read as the address it spells', () => {
   }
 
   // The escape is unescaped, not ignored: an escaped REMOTE address is still remote.
+  // `curl` is the verb here on purpose — `grep` is exempt (T48f), so a grep carrying a
+  // remote URL would be allowed and would prove nothing about the classification.
   const refused = [
-    'grep -oE "https://api\\.example\\.com/v1/x"',
     'curl -s https://api\\.example\\.com/v1/x',
+    'wget -q https://api\\.example\\.com/v1/x',
   ]
   for (const command of refused) {
     assert.equal(typeof verdict(guards, bash(command)), 'string', `must be blocked: ${command}`)
   }
+  // …and the same address in the same escaped spelling is simply an address, so a verb
+  // that CAN fetch is refused whether or not the shell escaped it.
+  assert.equal(isLocalHost(normUrl('https://api.example.com/v1/x', {}).host), false)
 })
 
 test('T48d: a bracketed IPv6 literal is judged by its address, not its brackets', () => {
@@ -1509,6 +1514,57 @@ test('T48e: unescaping a URL does not rewrite anything else in the command', () 
   assert.deepEqual(extractUrls('sed -e "s/\\./X/g" file.txt'), [])
   // And a command with no URL at all is unchanged.
   assert.deepEqual(extractUrls('ls -la /tmp'), [])
+})
+
+test('T48f: a PATTERN-POSITION tool is exempt, and the residual is asserted', () => {
+  // `grep` takes a regex as its primary argument, so a URL inside a grep command is a
+  // pattern being searched for, not a destination. Exempting it is not a grant of network
+  // access — grep has none — and refusing it does not redirect a fetch, it blocks a read.
+  // The refusal message would also be FALSE: it states that the call fetches over HTTP.
+  const { ctx, guards } = fakeCtx({ web: true })
+  apply(ctx, {})
+  const allowed = [
+    "grep -rn 'https://api.example.com/v1/x' config/",
+    "rg 'https://api.example.com/v1/x' config/",
+    "grep -c http://example.com/index.html /var/log/access.log",
+    "cat access.log | grep -oE 'https://[a-z]+\\\\.example\\\\.com/' | sort | uniq -c",
+  ]
+  for (const command of allowed) {
+    assert.equal(verdict(guards, bash(command)), undefined, `must be allowed: ${command}`)
+  }
+
+  // The exemption is PER SEGMENT, so a grep in the same command as a real fetch does not
+  // launder it: the curl segment carries its own address and is refused on its own.
+  const refused = [
+    "grep -rn 'https://api.example.com/x' f && curl -s https://api.example.com/y",
+    "rg 'https://api.example.com/x' f; wget -q https://api.example.com/y",
+  ]
+  for (const command of refused) {
+    assert.equal(typeof verdict(guards, bash(command)), 'string', `must be blocked: ${command}`)
+  }
+
+  // The line is PATTERN POSITION, not "any verb without a network stack". `echo` is NOT
+  // exempt, because the corpus contains commands where an echo merely PRINTS a URL that a
+  // later segment downloads — there the exemption would swallow a real fetch. Measured
+  // with tools/allowlist-candidate-scan.mjs: every `echo`/`head` refusal that would flip
+  // to allowed also names a downloader.
+  assert.equal(typeof verdict(guards, bash("echo 'https://api.example.com/x'")), 'string')
+
+  // KNOWN RESIDUAL, asserted rather than pretended (the sibling of T47b). This one IS new:
+  // with grep exempt, the only segment carrying an address is the grep, so letting a
+  // downloader consume it through a pipe slips past the URL rule — and `xargs` is not an
+  // HTTP verb, so it slips past the no-URL rule too. The block is a steering mechanism
+  // rather than a containment boundary, and this is the price of not refusing a read.
+  assert.equal(verdict(guards, bash("grep -oE 'https://api.example.com/x' f | xargs curl -s")), undefined)
+  assert.equal(verdict(guards, bash("rg 'https://api.example.com/x' f | xargs wget -q -O -")), undefined)
+
+  // The neighbouring variable form is NOT a residual: it is refused, and by the OTHER
+  // clause. The command names an HTTP verb while carrying no literal URL, so the rule
+  // falls back to the string's own first verb — `U=$(grep`, which is in nobody's list.
+  // Worth asserting, because it is the clause that keeps the pipe above narrow.
+  const indirect = verdict(guards, bash("U=$(grep -oE 'https://api.example.com/x' f); curl -s \"$U\""))
+  assert.equal(typeof indirect, 'string')
+  assert.match(indirect, /SHELL_HTTP_BLOCKED/)
 })
 
 test('T49: the block is a flat refusal — it never asks, and it fires on the FIRST call', () => {

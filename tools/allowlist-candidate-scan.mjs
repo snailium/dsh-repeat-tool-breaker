@@ -17,7 +17,7 @@ import { DEFAULTS, mergeDefaults, validateCfg } from '../lib/defaults.js'
 import { remoteFetchVerbs } from '../lib/normalize.js'
 
 const DOWNLOADER = /\b(curl|wget)\b|urllib|\brequests\.|fetch\(|Invoke-WebRequest|\biwr\b|http\.client/
-const CANDIDATES = ['grep', 'rg', 'sed', 'awk', 'echo', 'cat', 'head', 'tail', 'sort', 'uniq', 'jq', 'python3']
+const CANDIDATES = ['grep', 'rg', 'ag', 'sed', 'awk', 'echo', 'cat', 'head', 'tail', 'sort', 'uniq', 'jq', 'python3']
 
 function logsUnder(root, depth = 0, out = []) {
   if (depth > 5) return out
