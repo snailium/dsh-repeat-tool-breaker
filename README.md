@@ -909,6 +909,15 @@ The attempt counts follow the cap the script derives from `DEFAULTS`, so the
 0.4.2 defaults move the whole trajectory (cap 12, `host` 16) without any change
 to the assertion shape.
 
+**What compat does NOT cover.** The probe profile is
+`['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless', 'dsh-repeat-tool-breaker']`,
+and headless composes no client module system — so `dsh.client` is inert there and
+the browser half is never requested. Compat proves the Host half still installs,
+mounts and denies; it says nothing about the card. The card's own evidence is the
+15 client-seam tests (`C1`–`C15`), the manifest guard (`F17`), the tarball check in
+the release steps, and an end-to-end run against the real Web surface: a save that
+lands in `settings.yaml`, then a `Reset` that removes it.
+
 ## Releasing
 
 Publishing runs through `.github/workflows/publish.yml`, which is
@@ -917,9 +926,26 @@ release, and the job refuses to republish a version that already exists.
 
 ```bash
 # 1. bump the version and update CHANGELOG.md, commit, push
-# 2. trigger the release
+# 2. confirm the tarball carries BOTH halves — see below
+# 3. trigger the release
 gh workflow run publish.yml -f dry-run=false
 ```
+
+**Check the tarball before publishing.** `files` decides what ships, and the browser half
+is an ordinary file inside `lib/` — so a narrowed `files` drops the card silently: the
+settings namespace still registers, the card never renders, and nothing reports an error
+until someone opens the page. F17 guards the manifest, but only the tarball proves the
+file is really in it:
+
+```bash
+npm_config_cache=/tmp/dsh-npm-cache npm pack --silent
+tar tzf dsh-repeat-tool-breaker-<version>.tgz | grep -E 'lib/client\.js|index\.js'
+```
+
+A `require()` of the extracted `lib/client.js` fails with `ReferenceError: window is not
+defined`. That is expected and not a defect: a client bundle is a classic script for the
+browser, never a Node module, and the first-party bundles under
+`@deepseek-ai/dsh-client-ui-*/lib/client.js` behave identically.
 
 Authentication uses **npm Trusted Publishing (OIDC)**: the workflow needs
 `id-token: write` (already set) and a matching trusted-publisher connection on the
