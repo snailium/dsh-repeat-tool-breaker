@@ -22,7 +22,14 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
-      # The plugin is dependency-free, so there is nothing to install.
+      # There IS something to install as of 0.6.0: `@deepseek-ai/schemastery`, which
+      # `index.js` imports at module scope for its exported `Config` schema and
+      # `lib/settings.js` imports for the settings namespace. Without this step the
+      # suite silently SHRINKS rather than failing loudly: a file whose import throws
+      # reports as one failing test and its remaining cases never run, so a missing
+      # install reads as a small red suite instead of a broken environment.
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
       - name: Run deterministic suite
         run: npm test
       - name: Syntax check

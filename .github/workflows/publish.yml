@@ -49,6 +49,13 @@ jobs:
           npm install -g npm@latest
           npm --version
 
+      # The plugin has one runtime dependency (`@deepseek-ai/schemastery`, for the
+      # settings namespace and the exported `Config` schema), so a bare checkout
+      # cannot run the suite: `index.js` imports it at module scope, and without it
+      # EVERY test in a file that reaches the entry point fails to even load.
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
       - name: Test
         run: npm test
 
