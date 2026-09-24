@@ -88,11 +88,50 @@ import { classifyFailure } from './lib/failure.js'
 import { createFetchFileState, fetchFileToolState, registerFetchFileTool } from './lib/fetch-file.js'
 import { registerSettings, settingsState } from './lib/settings.js'
 import { createTracker, hasUserMessage } from './lib/window.js'
-import { mergeDefaults, validateCfg } from './lib/defaults.js'
+import { DEFAULTS, mergeDefaults, validateCfg } from './lib/defaults.js'
 import { firstVerb, remoteFetchVerbs } from './lib/normalize.js'
+
+import z from '@deepseek-ai/schemastery'
 
 /** Stable plugin identifier. */
 export const name = 'repeat-tool-breaker'
+
+/**
+ * The deployment-level schema: what this plugin's bundle patch entry may set.
+ *
+ * `cordis.resolveConfig` fills these defaults into the patch config and keeps every key
+ * this schema does not mention, so a PARTIAL schema is safe and the rest of the
+ * configuration (the `limits` table, `ignoreArgs`, …) still reaches `apply`.
+ *
+ * This schema does not render a settings box. The Plugins page shows the INTERSECTION of
+ * the settings namespaces a live Host plugin registered and the cards a browser bundle
+ * claimed under the same key: `lib/settings.js` registers the namespace, `lib/client.js`
+ * claims it. An exported `Config` is not on that path — the four built-in cards are
+ * hard-coded inside `@deepseek-ai/dsh-client-ui-settings-plugins`.
+ *
+ * Only the block policy appears here, because this is a DEPLOYMENT surface: the fields a
+ * profile patch is expected to set. The operator-facing knobs — the same block policy plus
+ * the stage thresholds — live in the settings namespace, where they change without a
+ * restart. The thresholds are absent from BOTH surfaces for one reason: each accepts `null`
+ * as its documented off-switch, and a plain `z.number()` would reject the null, turning a
+ * supported setting into a boot failure.
+ */
+export const Config = z.object({
+  blockShellHttp: z
+    .boolean()
+    .default(DEFAULTS.blockShellHttp)
+    .description('Refuse HTTP fetches made from the shell and send the model to web_fetch_file.'),
+  blockLocalHttp: z
+    .boolean()
+    .default(DEFAULTS.blockLocalHttp)
+    .description('Also refuse local (loopback/RFC1918) fetches. Off because web_fetch_file cannot reach them.'),
+  shellHttpAllow: z
+    .array(z.string())
+    .default([...DEFAULTS.shellHttpAllow])
+    .description(
+      'Shell verbs the block leaves alone. Their network use is incidental and there is no fetch-to-file equivalent. Default is evidence-led: git and docker are the only non-curl verbs that fetched a remote URL in every recorded session.',
+    ),
+})
 
 /** Injected cordis services required before `apply` runs. */
 export const inject = ['tools']
