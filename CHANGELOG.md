@@ -3,7 +3,19 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-09-24
+
+**One thing to know before upgrading.** `blockShellHttp` defaults to **on**, so a shell
+command that fetches a remote URL is now refused and the model is sent to `web_fetch_file`
+instead. That is the point of the release, but it changes what a session can do: a
+workflow that pipes `curl` into another command must become two steps, and a profile with
+no `ctx.web` is unaffected (the block is fail-safe). Two deliberate exceptions keep
+capabilities that would otherwise be lost: local addresses stay in the shell, and
+`shellHttpAllow` (default `['git', 'docker']`) leaves verbs alone whose network use is
+incidental. Add to that list from the new settings box when a real workflow needs it.
+
+No configuration key was removed. `warnAt`, `summarizeAt`, `failWarnAt`, `failLimit`,
+`limits`, `ignoreArgs` and the rest keep their names and semantics.
 
 ### Added
 
@@ -769,7 +781,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.0...v0.5.1
