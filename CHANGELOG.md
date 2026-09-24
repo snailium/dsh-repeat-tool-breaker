@@ -14,6 +14,12 @@ All notable changes to this project are documented here. This project adheres to
   carrying the literal destination. Enumerating downloader names would have missed the
   interpreters and been defeated by an absolute path in one step.
 
+  It is **fail-safe**: the block engages only when `web_fetch_file` is actually
+  registered. Refusing a fetch while the replacement is absent is not a redirect, it is
+  a lost capability — the network, gone — so a profile with no `ctx.web` keeps shell
+  HTTP. The registration is asynchronous, so early calls in a boot are allowed until the
+  tool exists; that is the intended direction for this particular race.
+
   The refusal is flat — it fires on the FIRST fetch and never asks — and it is the
   reason the `-w` detection below could be deleted: once this class of call cannot
   happen, the failure track's input is a tool's structured `statusCode` rather than an

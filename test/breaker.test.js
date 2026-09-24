@@ -434,18 +434,31 @@ test('T15: a generic sink is not an action identity', () => {
 // ---------------------------------------------------------------------------
 
 /** A minimal cordis-shaped context capturing the guard and the listeners. */
-function fakeCtx() {
+/**
+ * A context double.
+ *
+ * `web: false` (the default) models a profile with NO web service: `inject` never
+ * calls back, so `web_fetch_file` never registers — and, because the HTTP block is
+ * fail-safe, shell HTTP is then NOT blocked either. `web: true` models the shipped
+ * deployment, where the tool exists and the block therefore applies.
+ */
+function fakeCtx({ web = false } = {}) {
   const guards = []
   const handlers = new Map()
-  const ctx = {
-    tools: { guard: (fn) => { guards.push(fn); return () => {} } },
-    on: (event, fn) => { handlers.set(event, fn); return () => {} },
-    // A real context offers scoped, non-blocking `inject`. This double never calls
-    // back, which is exactly a profile WITHOUT a web service — the case where
-    // `web_fetch_file` must not register and the guard must not name it.
-    inject: () => () => {},
+  const tools = {
+    guard: (fn) => { guards.push(fn); return () => {} },
+    register: (definition) => { tools.registered.push(definition); return () => {} },
+    registered: [],
   }
-  return { ctx, guards, handlers }
+  const ctx = {
+    tools,
+    on: (event, fn) => { handlers.set(event, fn); return () => {} },
+    get: () => undefined,
+    inject: web
+      ? (_deps, callback) => { callback({ web: { fetch: async () => ({}) }, tools }); return () => {} }
+      : () => () => {},
+  }
+  return { ctx, guards, handlers, registered: tools.registered }
 }
 
 test('T12: apply() wires a synchronous guard that denies a repeat with a usable message', async () => {
@@ -1336,7 +1349,7 @@ function verdict(guards, exec) {
 }
 
 test('T47: the block is SEMANTIC — it does not care how the fetch is made', () => {
-  const { ctx, guards } = fakeCtx()
+  const { ctx, guards } = fakeCtx({ web: true })
   apply(ctx, {})
   const blocked = [
     'curl -s https://weather.gc.ca/x',
@@ -1360,7 +1373,7 @@ test('T47b: the KNOWN HOLE of a command-level rule, asserted rather than pretend
   // a command-level block can promise, so it is asserted here rather than left to be
   // discovered: closing it needs the capability removed (a sandbox without egress),
   // not a better rule.
-  const { ctx, guards } = fakeCtx()
+  const { ctx, guards } = fakeCtx({ web: true })
   apply(ctx, {})
   for (const command of [
     'bash /tmp/fetch.sh', // an HTTP verb inside a file: the verb here is `bash`
@@ -1384,7 +1397,7 @@ test('T47b: the KNOWN HOLE of a command-level rule, asserted rather than pretend
 })
 
 test('T48: local addresses, allowlisted verbs and ordinary commands are untouched', () => {
-  const { ctx, guards } = fakeCtx()
+  const { ctx, guards } = fakeCtx({ web: true })
   apply(ctx, {})
   const allowed = [
     // local: the fetch tool inherits the SSRF guard and CANNOT reach these, so
@@ -1404,7 +1417,7 @@ test('T48: local addresses, allowlisted verbs and ordinary commands are untouche
 })
 
 test('T49: the block is a flat refusal — it never asks, and it fires on the FIRST call', () => {
-  const { ctx, guards, handlers } = fakeCtx()
+  const { ctx, guards, handlers } = fakeCtx({ web: true })
   apply(ctx, { onLimit: 'ask' })
   // First call, no count behind it: a flat deny, not an escalation.
   const out = verdict(guards, bash('curl -s https://weather.gc.ca/x'))
@@ -1414,38 +1427,30 @@ test('T49: the block is a flat refusal — it never asks, and it fires on the FI
   assert.ok(handlers.get('tools/pre-execute') !== undefined)
 })
 
-test('T50: the denial points at the tool that actually exists', () => {
-  const { ctx, guards } = fakeCtx()
-  apply(ctx, {})
-  // The test double never injects `web`, so no fetch tool is registered — and the
-  // message must NOT name a tool the profile does not have.
-  assert.equal(fetchFileToolState.registered, false)
-  const noTool = verdict(guards, bash('curl -s https://weather.gc.ca/x'))
-  assert.doesNotMatch(noTool, /Use `web_fetch_file` instead/, 'must not name a missing tool')
-  assert.match(noTool, /No fetch-to-file tool is registered/)
+test('T50: FAIL-SAFE — no replacement tool means no block', () => {
+  // Refusing a fetch when the replacement is absent is not a redirect, it is a lost
+  // capability: the network, gone. So a profile without `ctx.web` must keep shell HTTP.
+  const noWeb = fakeCtx()
+  apply(noWeb.ctx, {})
+  for (const command of ['curl -s https://weather.gc.ca/x', 'wget -q -O - https://x.example.com/']) {
+    assert.equal(verdict(noWeb.guards, bash(command)), undefined, `must NOT block without the tool: ${command}`)
+  }
 
-  // With the tool registered the same denial names it, and spells out the two steps.
-  const registered = []
-  registerFetchFileTool(
-    {
-      inject: (_deps, cb) => {
-        cb({ web: { fetch: async () => ({}) }, tools: { register: (d) => registered.push(d) } })
-        return () => {}
-      },
-      get: () => undefined,
-    },
-    FETCH_FILE_DEFAULTS,
-  )
-  const fresh = fakeCtx()
-  apply(fresh.ctx, {})
-  const withTool = verdict(fresh.guards, bash('curl -s https://weather.gc.ca/x'))
-  assert.match(withTool, /Use `web_fetch_file` instead/)
-  assert.match(withTool, /1\. web_fetch_file\(url\)/, 'the two-step shape must be spelled out')
-  assert.match(withTool, /still work/, 'and it must say what still works')
+  // With the service present the tool registers, and the same call is then refused —
+  // and the denial names the tool, because the guard only blocks when it exists.
+  const withWeb = fakeCtx({ web: true })
+  apply(withWeb.ctx, {})
+  assert.equal(withWeb.registered.length, 1, 'the tool must register')
+  assert.equal(withWeb.registered[0].name, 'web_fetch_file')
+  const denial = verdict(withWeb.guards, bash('curl -s https://weather.gc.ca/x'))
+  assert.equal(typeof denial, 'string')
+  assert.match(denial, /Use `web_fetch_file` instead/)
+  assert.match(denial, /1\. web_fetch_file\(url\)/, 'the two-step shape must be spelled out')
+  assert.match(denial, /still work/, 'and it must say what still works')
 })
 
 test('T51: the block is configurable, and off is genuinely off', () => {
-  const off = fakeCtx()
+  const off = fakeCtx({ web: true })
   apply(off.ctx, { blockShellHttp: false })
   for (const command of [
     'curl -s https://weather.gc.ca/x',
@@ -1455,12 +1460,12 @@ test('T51: the block is configurable, and off is genuinely off', () => {
   }
 
   // `blockLocalHttp` is the switch that gives the capability up deliberately.
-  const strict = fakeCtx()
+  const strict = fakeCtx({ web: true })
   apply(strict.ctx, { blockLocalHttp: true })
   assert.equal(typeof verdict(strict.guards, bash('curl -s http://127.0.0.1:3080/')), 'string')
 
   // An empty allowlist stops exempting package managers.
-  const noAllow = fakeCtx()
+  const noAllow = fakeCtx({ web: true })
   apply(noAllow.ctx, { shellHttpAllow: [] })
   assert.equal(typeof verdict(noAllow.guards, bash('git clone https://github.com/a/b /tmp/b')), 'string')
 })
@@ -1469,7 +1474,7 @@ test('T52: a blocked fetch is not counted as a failure of the model', () => {
   // The guard refuses the call, so nothing ran. If the failure track counted its own
   // refusal, the block would feed the gate and the model would be punished for a
   // call that never happened.
-  const { ctx, guards, handlers } = fakeCtx()
+  const { ctx, guards, handlers } = fakeCtx({ web: true })
   apply(ctx, { onLimit: 'deny' })
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })

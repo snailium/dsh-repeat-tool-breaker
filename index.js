@@ -85,7 +85,7 @@ import {
   warnMessage,
 } from './lib/message.js'
 import { classifyFailure } from './lib/failure.js'
-import { fetchFileToolState, registerFetchFileTool } from './lib/fetch-file.js'
+import { createFetchFileState, fetchFileToolState, registerFetchFileTool } from './lib/fetch-file.js'
 import { createTracker, hasUserMessage } from './lib/window.js'
 import { mergeDefaults, validateCfg } from './lib/defaults.js'
 import { firstVerb } from './lib/normalize.js'
@@ -170,6 +170,8 @@ export function apply(ctx, config = {}) {
    * See the module docstring: the guard consuming an entry means the operator
    * approved; the entry surviving into `post-execute` means they declined.
    */
+  /** This context's fetch-file registration. Per-apply, so contexts cannot contaminate. */
+  const fetchFile = createFetchFileState()
   const pendingAsk = new WeakMap()
   /**
    * The advisory text owed to one execution, computed in the guard (the only
@@ -227,6 +229,12 @@ export function apply(ctx, config = {}) {
    */
   const isBlockedShellHttp = (fps, local, command) => {
     if (cfg.blockShellHttp !== true) return false
+    // FAIL-SAFE: never refuse a fetch when the replacement tool is not registered.
+    // Without this, a profile that has no web service would lose shell HTTP entirely
+    // — the capability removed and nothing put in its place. The registration is
+    // asynchronous (`ctx.inject`), so early calls in a boot are deliberately allowed
+    // until the tool exists.
+    if (fetchFile.registered !== true) return false
     // An incidental fetch by a local tool (a package manager, `git`) is left alone:
     // there is no fetch-to-file equivalent, so blocking it removes the capability
     // instead of redirecting it. See `shellHttpAllow`.
@@ -321,11 +329,7 @@ export function apply(ctx, config = {}) {
       const { args } = parts(exec)
       if (isBlockedShellHttp(blockFps, local, typeof args?.command === 'string' ? args.command : '')) {
         deniedByUs.add(exec)
-        return shellHttpBlockedMessage({
-          name,
-          toolAvailable: fetchFileToolState.registered,
-          localAllowed: cfg.blockLocalHttp !== true,
-        })
+        return shellHttpBlockedMessage({ name, localAllowed: cfg.blockLocalHttp !== true })
       }
     }
 
@@ -365,7 +369,7 @@ export function apply(ctx, config = {}) {
   // service. It is the replacement a denial points at, so the guard must know
   // whether it exists -- naming a tool a profile does not have is worse than
   // naming nothing.
-  registerFetchFileTool(ctx, { outputDir: cfg.outputDir, maxBytes: cfg.maxBytes })
+  registerFetchFileTool(ctx, { outputDir: cfg.outputDir, maxBytes: cfg.maxBytes }, fetchFile)
 
   const disposeGuard = ctx.tools.guard(guard)
   if (typeof disposeGuard === 'function') teardown.push(disposeGuard)

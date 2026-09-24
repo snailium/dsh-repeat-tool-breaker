@@ -471,7 +471,7 @@ at which point `ctx.tools.guard` is the genuine method.
         onLimit: ask                # ask | deny — what happens at either gate
         localHosts: deny            # deny | allow — see "Local addresses"
         # Refuse HTTP made from the shell; send the model to web_fetch_file instead.
-        blockShellHttp: true        # semantic: any shell call targeting a non-local URL
+        blockShellHttp: true        # semantic: any shell call targeting a non-local URL; fail-safe (no-op without the tool)
         blockLocalHttp: false       # local addresses stay in the shell — the fetch tool cannot reach them
         shellHttpAllow:             # verbs whose network use is incidental, with no fetch-to-file equivalent
           - git
