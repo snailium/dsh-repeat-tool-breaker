@@ -577,6 +577,9 @@ bundle is simply never requested, and the namespace stays editable through
 
 ### Re-deriving `shellHttpAllow`
 
+> The measurement tools below live in the **source repository**, not in the published
+> package — `files` ships only the plugin itself. Clone the repo to run them.
+
 The default `['git', 'docker']` is a claim about what agents actually do, so it ships with
 the tool that measures it. Point the scan at one or more `sessions/` directories and it
 replays every recorded shell call through this plugin's own detector:
@@ -612,7 +615,36 @@ The verdict splits in two, which is the number that actually matters:
   known hole rather than a containment boundary.
 - **The block's cost is 1.3%**: 52 calls that carry a URL without fetching anything (an
   `echo "see https://…"`, a heredoc rewriting a README). A command-level rule cannot tell
-  those from a real fetch.
+  those from a real fetch. 0.6.1 cut this to 37 (0.9%) by reading regex-escaped and
+  bracketed-IPv6 local addresses correctly.
+
+### Should verb X be exempt?
+
+The block is destination-based, so a verb that cannot fetch is still refused when a URL
+appears in its arguments — a `grep` whose PATTERN is an address, an `echo` that prints
+one. That is a false positive by construction, and "just add it to the allowlist" is the
+obvious answer. It is also usually the wrong one, so it comes with a tool:
+
+```bash
+node tools/allowlist-candidate-scan.mjs ~/.dsh/sessions ~/harness-home/sessions
+```
+
+It reports, for each non-fetching verb, how many refused calls would flip to allowed if
+that verb were exempted — and how many of those also name a downloader elsewhere in the
+command, which makes the exemption a **bypass** rather than a fix.
+
+As of 0.6.1, over 28,333 shell calls:
+
+| verb | calls that would flip | of those, ones that also fetch |
+|---|---|---|
+| `grep` | **0** | — |
+| `echo` | 2 | 2 |
+| `head` | 1 | 1 |
+
+`grep` flips nothing: it is never the only refused verb in a command, so exempting it
+would change no decision at all. The verbs that do flip are all commands that also run a
+real downloader — exempting them would open exactly the hole the block exists to close.
+**None of the three is added.**
 
 #### Not in the box
 

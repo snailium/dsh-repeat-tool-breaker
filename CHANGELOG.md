@@ -3,6 +3,55 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-09-24
+
+Two locality bugs, both of which made the 0.6.0 shell-HTTP block refuse a call it had
+promised to leave alone. No configuration change; upgrading is a drop-in.
+
+### Fixed
+
+- **A regex-escaped URL was read as a different address.** The URL pattern stops at a
+  backslash — it cannot appear in a URL — so a loopback address spelled as a grep pattern
+  was truncated before parsing:
+
+  | written | extracted | host | judged |
+  |---|---|---|---|
+  | `http://127.0.0.1:3080/` | full | `127.0.0.1` | local |
+  | `http://127\.0\.0\.1:3080/` | `http://127` | `0.0.0.127` | **remote** |
+
+  WHATWG reads a bare `127` as the IPv4 *number* `0.0.0.127`, which is not loopback — so a
+  local address was classified as remote and refused. A regex escape before any character
+  a URL can contain (`.:/?&=#%~-`) is now removed from the copy the pattern reads, so the
+  address is extracted whole. Found on this plugin's own maintainer: a post-restart
+  verification command that grepped for a loopback token URL was **blocked by this plugin's
+  own rule**, and the shape is exactly what a verification command looks like.
+
+- **A bracketed IPv6 literal was judged by its brackets.** `URL.hostname` keeps them, and
+  the locality test compared `[::1]` against `::1` — so `curl http://[::1]:8080/` was
+  refused while the refusal message told the operator that `::1` is exempt. Every IPv6 URL
+  carries brackets, so the only spelling that reached the classifier was the one spelling
+  that failed. The brackets are now dropped in `normUrl` (so the `host:` and `site:`
+  fingerprints cannot see two spellings of one address) and again defensively in
+  `isLocalHost`.
+
+Measured over the same 28,333-call corpus, the block's cost — calls that carry a URL
+without fetching anything, and are refused because a command-level rule cannot tell them
+from a real fetch — falls from 52 of 4,081 refused (1.3%) to 37 of 4,056 (0.9%).
+
+### Also in this release
+
+`tools/allowlist-candidate-scan.mjs` answers the question these bugs keep raising: should
+verb X be exempt? It reports, for each non-fetching verb, how many refused calls would
+flip to allowed if that verb were exempted — and how many of those name a downloader
+elsewhere in the command, which would make the exemption a bypass rather than a fix.
+
+The answer for `grep` came back as **zero**. The 0.6.1 fix reduced the corpus's
+grep-with-a-remote-URL calls from 38 to 3, and all 3 are refused for a different verb
+anyway — so exempting `grep` would change no decision at all. The only verbs that flip
+are `echo` (2) and `head` (1), and all three of those commands also name a real
+downloader; exempting them would open the hole the block exists to close. Neither is
+added.
+
 ## [0.6.0] - 2026-09-24
 
 **One thing to know before upgrading.** `blockShellHttp` defaults to **on**, so a shell
@@ -781,7 +830,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.1...v0.5.2

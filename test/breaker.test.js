@@ -1405,8 +1405,10 @@ test('T48: local addresses, allowlisted verbs and ordinary commands are untouche
     'curl -s http://127.0.0.1:3080/',
     'curl -s http://192.168.111.90:3080/healthz',
     // incidental network use with no fetch-to-file equivalent — and these two are the
-    // EVIDENCE-LED default, from a scan of every recorded session: `git` (95 calls) and
-    // `docker` (6) were the only non-curl verbs that ever fetched a remote URL.
+    // EVIDENCE-LED default, reproducible with `tools/shell-http-allowlist-scan.mjs`:
+    // over 225 logs / 27,539 shell calls, the only verbs that ever carried a remote URL
+    // were `curl` (3424 segments), `git` (370) and `docker` (12), plus `wget` (7) — which
+    // is NOT exempt, because it has the same fetch-to-file equivalent `curl` does.
     'git clone https://github.com/a/b /tmp/b',
     'docker run --rm alpine sh -c "true"',
     // not a fetch at all
@@ -1430,6 +1432,83 @@ test('T48b: a verb is exempt BECAUSE it is listed, and adding one is the point',
   const extended = fakeCtx({ web: true })
   apply(extended.ctx, { shellHttpAllow: ['git', 'docker', 'npm'] })
   assert.equal(verdict(extended.guards, bash('npm i git+https://github.com/a/b')), undefined)
+})
+
+test('T48c: a regex-escaped URL is read as the address it spells', () => {
+  // Found in production, on this plugin's own maintainer: a post-restart verification
+  // command that grepped for a loopback token URL was refused by the block. The URL
+  // pattern stops at a backslash (it cannot appear in a URL), so the match truncated:
+  // `http://127\.0\.0\.1:3080/` extracted as `http://127`, and WHATWG reads a bare
+  // `127` as the IPv4 NUMBER 0.0.0.127 — not loopback. So a LOCAL address spelled as a
+  // grep pattern was classified as remote. The pattern form is exactly what a
+  // verification command looks like, which is why this was hit immediately.
+  assert.deepEqual(extractUrls('http://127\\.0\\.0\\.1:3080/'), ['http://127.0.0.1:3080/'])
+  assert.deepEqual(extractUrls('http://127\\.0\\.0\\.1:3080/\\?token=abc'), [
+    'http://127.0.0.1:3080/?token=abc',
+  ])
+  // an escaped colon and an escaped scheme separator unescape too
+  assert.deepEqual(extractUrls('http\\:\\/\\/127\\.0\\.0\\.1\\:3080/'), ['http://127.0.0.1:3080/'])
+  assert.equal(normUrl('http://127.0.0.1:3080/', {}).host, '127.0.0.1')
+
+  const { ctx, guards } = fakeCtx({ web: true })
+  apply(ctx, {})
+  const allowed = [
+    "grep -oE 'http://127\\.0\\.0\\.1:3080/\\?token=[A-Za-z0-9_-]+'",
+    'curl -s http://127\\.0\\.0\\.1:3080/\\?token=abc',
+    'grep -rn http://192\\.168\\.111\\.90:3080/healthz /var/log',
+  ]
+  for (const command of allowed) {
+    assert.equal(verdict(guards, bash(command)), undefined, `must be allowed: ${command}`)
+  }
+
+  // The escape is unescaped, not ignored: an escaped REMOTE address is still remote.
+  const refused = [
+    'grep -oE "https://api\\.example\\.com/v1/x"',
+    'curl -s https://api\\.example\\.com/v1/x',
+  ]
+  for (const command of refused) {
+    assert.equal(typeof verdict(guards, bash(command)), 'string', `must be blocked: ${command}`)
+  }
+})
+
+test('T48d: a bracketed IPv6 literal is judged by its address, not its brackets', () => {
+  // `URL.hostname` keeps an IPv6 literal's brackets, and the locality test compared
+  // `[::1]` against `::1` — so `curl http://[::1]:8080/` was refused, while the
+  // refusal message told the operator that `::1` is exempt. The message was lying.
+  // Every IPv6 URL carries brackets, so this was the ONLY spelling that reached the
+  // classifier and it was the one spelling that failed.
+  for (const [host, local] of [
+    ['http://[::1]:3080/', true],
+    ['http://[0:0:0:0:0:0:0:1]:3080/', true],
+    ['http://[fe80::1]:8080/', true],
+    ['http://[fd00::1]:8080/', true],
+    ['http://[2001:db8::1]:8080/', false],
+  ]) {
+    assert.equal(isLocalHost(normUrl(host, {}).host), local, host)
+  }
+  // The brackets are dropped from the identity itself, not only from the decision, so
+  // the `host:` measure and `site:` cannot see two spellings of one address.
+  assert.equal(normUrl('http://[::1]:3080/x', {}).host, '::1')
+  assert.equal(isLocalHost('[::1]'), true, 'a raw bracketed host is accepted too')
+
+  const { ctx, guards } = fakeCtx({ web: true })
+  apply(ctx, {})
+  for (const command of ['curl -s http://[::1]:3080/healthz', 'curl -s http://[fe80::1]/x']) {
+    assert.equal(verdict(guards, bash(command)), undefined, `must be allowed: ${command}`)
+  }
+  assert.equal(typeof verdict(guards, bash('curl -s http://[2001:db8::1]:8080/x')), 'string')
+})
+
+test('T48e: unescaping a URL does not rewrite anything else in the command', () => {
+  // The unescape runs on the copy the URL pattern reads, and only before the handful of
+  // characters a URL contains. A Windows path separator and a line continuation are the
+  // two backslashes that must survive, because both are ordinary shell text.
+  assert.deepEqual(extractUrls('cd C:\\dir\\file.txt; ls'), [])
+  assert.deepEqual(extractUrls('curl \\\n  https://example.com/x'), ['https://example.com/x'])
+  // A dot before a non-URL token is still not a URL.
+  assert.deepEqual(extractUrls('sed -e "s/\\./X/g" file.txt'), [])
+  // And a command with no URL at all is unchanged.
+  assert.deepEqual(extractUrls('ls -la /tmp'), [])
 })
 
 test('T49: the block is a flat refusal — it never asks, and it fires on the FIRST call', () => {
