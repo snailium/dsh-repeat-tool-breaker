@@ -3,6 +3,51 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-09-24
+
+**BREAKING: the block is a BLACKLIST, and the setting is the list itself.** `shellHttpAllow`
+is gone; `shellHttpBlock` replaces it and holds the COMMANDS TO REFUSE. A profile still
+carrying the old key fails the load with a pointer at the new one rather than silently
+losing its configuration.
+
+**Why.** The old rule fired on any non-local URL, so a command was refused for merely
+CONTAINING an address — a grep pattern, a heredoc writing a README, a commit message quoting
+a link — and the refusal then asserted that the call "fetches over HTTP", which was false,
+and pointed at `web_fetch_file`, which cannot help with a grep. Measured over the corpus,
+the worst of that has been the most-complained-about behaviour in production.
+
+**How it works now.** `unwrapCommands()` traverses every place the command line can run
+something — split on the separators, then open the shells: command substitution, a shell
+host (`sh -c`, `ssh`, `xargs`, `sudo`, `timeout`, …), `find -exec`, and a quoted
+sub-command — and each candidate is judged on ITS OWN verb. A verb on the blacklist, or an
+interpreter program naming a request API (`urllib`, `requests.`, `fetch(`, …), makes the
+call refuse. Coverage is deliberately extensible: another shell to open is another entry in
+`SHELL_HOSTS`, another command to filter is another list entry, and neither requires the
+rule to model where a mechanism appears.
+
+**Measured** with `tools/block-coverage.mjs` over 28,471 shell calls:
+
+| | |
+|---|---|
+| calls that really fetch | 4042 |
+| refused | 4022 |
+| **coverage** | **99.5%** |
+| **refused that fetch nothing** | **0** |
+
+The 20 misses are `socat` invocations — `socat -V`, `socat -h`, and a local TLS relay —
+none of which fetch anything, so they are evidence of nothing rather than a gap. `socat` is
+therefore NOT on the blacklist.
+
+### Fixed
+
+- **A URL whose port is a shell variable no longer loses its locality.**
+  `http://127.0.0.1:$PORT/health` made `new URL` throw, and a throw read as "there is no
+  address at all" — so a LOCAL endpoint written that way was classified as remote and
+  refused. It is an ordinary way to write a health check, and it dominated the
+  false-positive set (316 corpus calls) rather than being a curiosity. A non-numeric port is
+  now dropped before parsing: it is part of no fingerprint. The port separator is found
+  after an IPv6 literal's closing bracket, so `[fe80::1]` is not truncated to `[fe80:`.
+
 ## [0.6.2] - 2026-09-24
 
 ### Fixed
@@ -862,7 +907,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.5.3...v0.6.0

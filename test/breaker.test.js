@@ -1420,18 +1420,25 @@ test('T48: local addresses, allowlisted verbs and ordinary commands are untouche
   }
 })
 
-test('T48b: a verb is exempt BECAUSE it is listed, and adding one is the point', () => {
-  // `npm i git+https://…` is NOT in the evidence-led default, so it is refused — and
-  // that is deliberate rather than an oversight: the corpus never showed it, and
-  // guessing an exemption for a verb nobody used is speculation. Adding it is a
-  // settings change, which is what the Settings → Plugins box is for.
+test('T48b: the blacklist IS the policy, and editing it is the point', () => {
+  // `shellHttpBlock` is the list of commands to refuse, so what an operator changes is the
+  // list itself. `wget` is ON the default list rather than off: it has the same
+  // fetch-to-file replacement `curl` does. Taking it off restores the old behaviour, which
+  // is exactly what the settings box is for.
   const strict = fakeCtx({ web: true })
   apply(strict.ctx, {})
-  assert.equal(typeof verdict(strict.guards, bash('npm i git+https://github.com/a/b')), 'string')
+  assert.equal(typeof verdict(strict.guards, bash('wget -q -O - https://example.com/x')), 'string')
 
   const extended = fakeCtx({ web: true })
-  apply(extended.ctx, { shellHttpAllow: ['git', 'docker', 'npm'] })
-  assert.equal(verdict(extended.guards, bash('npm i git+https://github.com/a/b')), undefined)
+  apply(extended.ctx, { shellHttpBlock: ['curl', 'aria2c'] })
+  assert.equal(verdict(extended.guards, bash('wget -q -O - https://example.com/x')), undefined)
+
+  // A package manager is NOT a fetch client under this rule, so `npm i git+https://…` is
+  // ALLOWED — and that is a deliberate consequence of the blacklist rather than an
+  // oversight. The pre-0.6.3 rule refused it, but the redirect it offered was meaningless:
+  // a package install is not a page fetch, and `web_fetch_file` cannot install anything.
+  // Refusing it cost a round-trip and bought nothing.
+  assert.equal(verdict(strict.guards, bash('npm i git+https://github.com/a/b')), undefined)
 })
 
 test('T48c: a regex-escaped URL is read as the address it spells', () => {
@@ -1543,28 +1550,69 @@ test('T48f: a PATTERN-POSITION tool is exempt, and the residual is asserted', ()
     assert.equal(typeof verdict(guards, bash(command)), 'string', `must be blocked: ${command}`)
   }
 
-  // The line is PATTERN POSITION, not "any verb without a network stack". `echo` is NOT
-  // exempt, because the corpus contains commands where an echo merely PRINTS a URL that a
-  // later segment downloads — there the exemption would swallow a real fetch. Measured
-  // with tools/allowlist-candidate-scan.mjs: every `echo`/`head` refusal that would flip
-  // to allowed also names a downloader.
-  assert.equal(typeof verdict(guards, bash("echo 'https://api.example.com/x'")), 'string')
+  // The line is PATTERN POSITION, not "any verb without a network stack". An `echo` that
+  // PRINTS a URL names no mechanism, so under the 0.6.3 blacklist it is allowed — and that
+  // is the fix, not a hole: nothing in the command can make a request. It WAS refused
+  // before 0.6.3, on the address alone.
+  assert.equal(verdict(guards, bash("echo 'https://api.example.com/x'")), undefined)
 
-  // KNOWN RESIDUAL, asserted rather than pretended (the sibling of T47b). This one IS new:
-  // with grep exempt, the only segment carrying an address is the grep, so letting a
-  // downloader consume it through a pipe slips past the URL rule — and `xargs` is not an
-  // HTTP verb, so it slips past the no-URL rule too. The block is a steering mechanism
-  // rather than a containment boundary, and this is the price of not refusing a read.
-  assert.equal(verdict(guards, bash("grep -oE 'https://api.example.com/x' f | xargs curl -s")), undefined)
-  assert.equal(verdict(guards, bash("rg 'https://api.example.com/x' f | xargs wget -q -O -")), undefined)
-
-  // The neighbouring variable form is NOT a residual: it is refused, and by the OTHER
-  // clause. The command names an HTTP verb while carrying no literal URL, so the rule
-  // falls back to the string's own first verb — `U=$(grep`, which is in nobody's list.
-  // Worth asserting, because it is the clause that keeps the pipe above narrow.
+  // KNOWN RESIDUAL, asserted rather than pretended (the sibling of T47b). 0.6.3 CLOSES the
+  // pipe case that 0.6.2 opened: `xargs` is a shell host, so the `curl` after it is in
+  // command position and the mechanism fires. The variable case is refused by the no-URL
+  // fallback, which reads the string's own first verb.
+  assert.equal(typeof verdict(guards, bash("grep -oE 'https://api.example.com/x' f | xargs curl -s")), 'string')
+  assert.equal(typeof verdict(guards, bash("rg 'https://api.example.com/x' f | xargs wget -q -O -")), 'string')
   const indirect = verdict(guards, bash("U=$(grep -oE 'https://api.example.com/x' f); curl -s \"$U\""))
   assert.equal(typeof indirect, 'string')
   assert.match(indirect, /SHELL_HTTP_BLOCKED/)
+})
+
+test('T48g: the trigger is a MECHANISM, so an address alone is not a refusal', () => {
+  // The inversion. Before 0.6.3 the rule was `non-local URL || http-verb`; it is now
+  // `http-verb || (fetch mechanism in command position && non-local URL)`. Every call the
+  // new rule refuses, the old one refused too — it is a strict subset, so it can add no
+  // refusal. What it stops refusing is ordinary work that happens to contain an address.
+  const { ctx, guards } = fakeCtx({ web: true })
+  apply(ctx, {})
+
+  const allowed = [
+    // authoring and inspection — the commands a model must write to handle URLs in text
+    "cat > NOTES.md <<'EOF'",
+    'git commit -m "fix the https://example.com redirect"',
+    "sed -n 's|https://old.example.com|https://new.example.com|' config.yml",
+    "jq -r '.url' data.json | sort | uniq -c",
+    "printf '%s\\n' 'https://api.example.com/x' >> urls.txt",
+    // talking ABOUT fetching is not fetching
+    "grep -rn 'curl' scripts/",
+    "echo 'use wget or curl for this, see https://example.com/docs'",
+  ]
+  for (const command of allowed) {
+    assert.equal(verdict(guards, bash(command)), undefined, `must be allowed: ${command}`)
+  }
+
+  const refused = [
+    // a mechanism in command position, with an address to reach
+    'curl -s https://api.example.com/x',
+    'aria2c https://example.com/big.iso',
+    'rclone copy https://example.com/f /tmp/f',
+    "ssh build-host 'curl -s https://api.example.com/x'",
+    "bash -c 'wget -q https://example.com/x'",
+    "sudo curl -s https://api.example.com/x",
+    // an interpreter whose inline program names a request API
+    "python3 -c 'import urllib.request; urllib.request.urlopen(\"https://x.example.com\")'",
+    'node -e "fetch(\'https://api.example.com/x\')"',
+    // an inline program split across a heredoc, where the API name is in a later segment
+    "python3 - <<'PY'\nimport urllib.request\nurllib.request.urlopen('https://x.example.com')\nPY",
+  ]
+  for (const command of refused) {
+    assert.equal(typeof verdict(guards, bash(command)), 'string', `must be blocked: ${command}`)
+  }
+
+  // …and the mechanism still has to TARGET something remote: a local address keeps its
+  // exemption, which is the capability the fetch tool cannot restore.
+  assert.equal(verdict(guards, bash('curl -s http://127.0.0.1:3080/healthz')), undefined)
+  // The no-URL fallback is unchanged, so a mechanism with no address is still refused.
+  assert.equal(typeof verdict(guards, bash('curl --config /tmp/curlrc')), 'string')
 })
 
 test('T49: the block is a flat refusal — it never asks, and it fires on the FIRST call', () => {
@@ -1615,10 +1663,11 @@ test('T51: the block is configurable, and off is genuinely off', () => {
   apply(strict.ctx, { blockLocalHttp: true })
   assert.equal(typeof verdict(strict.guards, bash('curl -s http://127.0.0.1:3080/')), 'string')
 
-  // An empty allowlist stops exempting package managers.
-  const noAllow = fakeCtx({ web: true })
-  apply(noAllow.ctx, { shellHttpAllow: [] })
-  assert.equal(typeof verdict(noAllow.guards, bash('git clone https://github.com/a/b /tmp/b')), 'string')
+  // An EMPTY blacklist is the documented off-switch that does not touch `blockShellHttp`:
+  // nothing is on the list, so nothing is refused.
+  const noBlock = fakeCtx({ web: true })
+  apply(noBlock.ctx, { shellHttpBlock: [] })
+  assert.equal(verdict(noBlock.guards, bash('curl -s https://weather.gc.ca/x')), undefined)
 })
 
 test('T52: a blocked fetch is not counted as a failure of the model', () => {
@@ -1645,6 +1694,12 @@ test('T52: a blocked fetch is not counted as a failure of the model', () => {
 test('T53: the block honours the fail-loud configuration contract', () => {
   assert.throws(() => validateCfg(mergeDefaults({ blockShellHttp: 'yes' })), /blockShellHttp/)
   assert.throws(() => validateCfg(mergeDefaults({ blockLocalHttp: 1 })), /blockLocalHttp/)
-  assert.throws(() => validateCfg(mergeDefaults({ shellHttpAllow: 'git' })), /shellHttpAllow/)
-  assert.deepEqual(DEFAULTS.shellHttpAllow.filter((v) => v === 'git'), ['git'])
+  assert.throws(() => validateCfg(mergeDefaults({ shellHttpBlock: 'git' })), /shellHttpBlock/)
+  // The default is the fetch clients, not the verbs whose network use is incidental.
+  assert.ok(DEFAULTS.shellHttpBlock.includes('curl'))
+  assert.ok(DEFAULTS.shellHttpBlock.includes('wget'))
+  assert.ok(!DEFAULTS.shellHttpBlock.includes('git'))
+  // A profile still carrying the 0.6.x name learns what replaced it instead of silently
+  // losing its tuning.
+  assert.throws(() => validateCfg(mergeDefaults({ shellHttpAllow: ['git'] })), /shellHttpBlock/)
 })

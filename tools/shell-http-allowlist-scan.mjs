@@ -1,10 +1,10 @@
 /**
  * What the shell-HTTP block costs, measured over the recorded session corpus.
  *
- * `shellHttpAllow` defaults to `['git', 'docker']`, and that default is a claim about what
- * agents actually do: which shell verbs carry a REMOTE URL, and how often. A claim like
- * that should be reproducible rather than asserted, so this tool replays the corpus through
- * the plugin's own detector and prints the verbs that would be refused.
+ * `shellHttpBlock` is a claim about what agents actually do: which shell verbs carry a
+ * REMOTE URL, and how often. A claim like that should be reproducible rather than asserted,
+ * so this tool replays the corpus through the plugin's own detector and prints, for every
+ * fetching verb, whether the blacklist already covers it.
  *
  * It is the evidence behind the default, and the way to re-derive it after the corpus
  * grows — the narrow list is only defensible while the numbers say the other verbs are
@@ -103,22 +103,22 @@ function commandOf(data) {
 
 async function main() {
   const argv = process.argv.slice(2)
-  let allow = [...DEFAULTS.shellHttpAllow]
+  let blockedList = [...DEFAULTS.shellHttpBlock]
   const roots = []
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--allow') {
-      allow = (argv[++i] ?? '').split(',').map((value) => value.trim()).filter(Boolean)
+    if (argv[i] === '--block') {
+      blockedList = (argv[++i] ?? '').split(',').map((value) => value.trim()).filter(Boolean)
       continue
     }
     roots.push(argv[i])
   }
   if (roots.length === 0) {
-    console.error('usage: node tools/shell-http-allowlist-scan.mjs [--allow a,b] <sessions-root> [...]')
+    console.error('usage: node tools/shell-http-allowlist-scan.mjs [--block a,b] <sessions-root> [...]')
     process.exit(2)
   }
 
   const cfg = validateCfg(mergeDefaults({}))
-  const allowSet = new Set(allow)
+  const blockSet = new Set(blockedList)
 
   const byVerb = new Map()
   let logs = 0
@@ -147,11 +147,11 @@ async function main() {
         if (verbs.length === 0) continue
         fetching++
         for (const verb of verbs) {
-          const bucket = byVerb.get(verb) ?? { segments: 0, exempt: allowSet.has(verb) }
+          const bucket = byVerb.get(verb) ?? { segments: 0, blocked: blockSet.has(verb) }
           bucket.segments++
           byVerb.set(verb, bucket)
         }
-        const refused = verbs.filter((verb) => !allowSet.has(verb))
+        const refused = verbs.filter((verb) => !blockSet.has(verb))
         if (refused.length === 0) continue
         blocked++
         if (DOWNLOADER.test(command)) {
@@ -168,12 +168,12 @@ async function main() {
 
   const rows = [...byVerb.entries()].sort((a, b) => b[1].segments - a[1].segments)
   console.log(`logs=${logs} shell_calls=${calls} calls_with_a_remote_url=${fetching}`)
-  console.log(`allowlist=${JSON.stringify(allow)}\n`)
-  console.log('verb                      segments  exempt')
+  console.log(`blacklist=${JSON.stringify(blockedList)}\n`)
+  console.log('verb                      segments  blacklist')
   for (const [verb, bucket] of rows) {
-    console.log(`${verb.padEnd(24)}  ${String(bucket.segments).padStart(8)}  ${bucket.exempt ? 'yes' : 'NO'}`)
+    console.log(`${verb.padEnd(24)}  ${String(bucket.segments).padStart(8)}  ${bucket.blocked ? 'covered' : 'MISSED'}`)
   }
-  const refusedVerbs = rows.filter(([, bucket]) => !bucket.exempt)
+  const refusedVerbs = rows.filter(([, bucket]) => !bucket.blocked)
   console.log(
     `\nwould be REFUSED: ${refusedVerbs.reduce((sum, [, b]) => sum + b.segments, 0)} segments across ` +
       `${refusedVerbs.length} verb(s)`,

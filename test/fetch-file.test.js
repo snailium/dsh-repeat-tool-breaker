@@ -251,7 +251,7 @@ test('F13: fetch-file settings are validated fail-loud', () => {
 })
 
 // ---------------------------------------------------------------------------
-// The settings namespace: the box an operator uses to extend shellHttpAllow
+// The settings namespace: the box an operator uses to extend shellHttpBlock
 // ---------------------------------------------------------------------------
 
 /**
@@ -295,13 +295,13 @@ test('F14: the settings box registers, and a change applies live', async () => {
     '../lib/settings.js'
   )
   const { default: z } = await import('@deepseek-ai/schemastery')
-  const cfg = { ...FETCH_FILE_DEFAULTS, blockShellHttp: true, blockLocalHttp: false, shellHttpAllow: ['git', 'docker'] }
+  const cfg = { ...FETCH_FILE_DEFAULTS, blockShellHttp: true, blockLocalHttp: false, shellHttpBlock: ['curl', 'wget'] }
   const schema = buildSettingsSchema(z, cfg)
 
   // The defaults come from cfg, so the box and lib/defaults.js cannot drift.
   const defaults = schema({})
   assert.equal(defaults.blockShellHttp, true)
-  assert.deepEqual(defaults.shellHttpAllow, ['git', 'docker'])
+  assert.deepEqual(defaults.shellHttpBlock, ['curl', 'wget'])
 
   const double = fakeSettingsService({ base: {} })
   const seen = []
@@ -312,7 +312,7 @@ test('F14: the settings box registers, and a change applies live', async () => {
       return () => {}
     },
   }
-  registerSettings(ctx, cfg, { shellHttpAllow: ['git', 'docker'] }, (value) => seen.push(value))
+  registerSettings(ctx, cfg, { shellHttpBlock: ['curl', 'wget'] }, (value) => seen.push(value))
   await new Promise((resolve) => setTimeout(resolve, 60))
 
   assert.equal(settingsState.registered, true, `registration failed: ${settingsState.reason}`)
@@ -321,9 +321,9 @@ test('F14: the settings box registers, and a change applies live', async () => {
   assert.equal(seen.length, 1, 'the resolved value is delivered once at registration')
 
   // A change in the box re-delivers, which is what makes the value live.
-  double.set({ ...defaults, shellHttpAllow: ['git', 'docker', 'npm'] })
+  double.set({ ...defaults, shellHttpBlock: ['curl', 'wget', 'aria2c'] })
   assert.equal(seen.length, 2)
-  assert.deepEqual(seen[1].shellHttpAllow, ['git', 'docker', 'npm'])
+  assert.deepEqual(seen[1].shellHttpBlock, ['curl', 'wget', 'aria2c'])
 })
 
 test('F15: no settings provider is a soft failure, not a silent one', async () => {

@@ -306,10 +306,10 @@ test('C11: a comma list is normalized, so the control can be typed loosely', asy
   const props = captured.registrations[0].options.inject()
   const store = props.hooks.repeatToolBreaker
 
-  props.edit('shellHttpAllow', ' git , docker ,git,  ')
+  props.edit('shellHttpBlock', ' curl , wget ,curl,  ')
   props.save()
   await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.deepEqual(scope.calls.set, [['shellHttpAllow', ['git', 'docker']]])
+  assert.deepEqual(scope.calls.set, [['shellHttpBlock', ['curl', 'wget']]])
 })
 
 test('C12: a boolean field renders the literal the settings document uses', async () => {

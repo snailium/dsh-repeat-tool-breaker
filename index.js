@@ -89,7 +89,7 @@ import { createFetchFileState, fetchFileToolState, registerFetchFileTool } from 
 import { registerSettings, settingsState } from './lib/settings.js'
 import { createTracker, hasUserMessage } from './lib/window.js'
 import { DEFAULTS, mergeDefaults, validateCfg } from './lib/defaults.js'
-import { firstVerb, remoteFetchVerbs } from './lib/normalize.js'
+import { blockShellHttp } from './lib/block-policy.js'
 
 import z from '@deepseek-ai/schemastery'
 
@@ -125,11 +125,11 @@ export const Config = z.object({
     .boolean()
     .default(DEFAULTS.blockLocalHttp)
     .description('Also refuse local (loopback/RFC1918) fetches. Off because web_fetch_file cannot reach them.'),
-  shellHttpAllow: z
+  shellHttpBlock: z
     .array(z.string())
-    .default([...DEFAULTS.shellHttpAllow])
+    .default([...DEFAULTS.shellHttpBlock])
     .description(
-      'Shell verbs the block leaves alone. Their network use is incidental and there is no fetch-to-file equivalent. Default is evidence-led: git and docker are the only non-curl verbs that fetched a remote URL in every recorded session.',
+      'Commands the block REFUSES. The block is a blacklist: a command is refused when its verb is on this list, or when an interpreter program names a request API. Defaults are the raw HTTP clients plus the file/streaming downloaders, which all have web_fetch_file as a replacement.',
     ),
 })
 
@@ -275,23 +275,7 @@ export function apply(ctx, config = {}) {
     // asynchronous (`ctx.inject`), so early calls in a boot are deliberately allowed
     // until the tool exists.
     if (fetchFile.registered !== true) return false
-
-    const remote = local !== true && fps.some((fp) => fp.startsWith('host:'))
-    const httpVerb = fps.includes('family:http-fetch')
-    const localHttp =
-      cfg.blockLocalHttp === true && local === true && fps.some((fp) => fp.startsWith('net:'))
-    if (!remote && !(httpVerb && local !== true) && !localHttp) return false
-
-    // The exemption is per SEGMENT, not per command: a fetch is exempt only when
-    // EVERY segment that targets a remote URL runs an allowlisted verb. Attributing
-    // the fetch to the whole string's first verb would read `cd /x && git clone
-    // https://…` as `cd` and refuse a clone that is meant to be allowed.
-    if (cfg.shellHttpAllow.length === 0) return true
-    const fetchVerbs = remoteFetchVerbs(command, cfg.hostAliases)
-    if (fetchVerbs.length > 0) return !fetchVerbs.every((verb) => cfg.shellHttpAllow.includes(verb))
-    // No URL anywhere but an HTTP verb is present (`curl --config …`): fall back to
-    // the string's own verb.
-    return !cfg.shellHttpAllow.includes(firstVerb(command))
+    return blockShellHttp(command, cfg)
   }
 
   /**
@@ -418,7 +402,7 @@ export function apply(ctx, config = {}) {
   const SETTINGS_KEYS = [
     'blockShellHttp',
     'blockLocalHttp',
-    'shellHttpAllow',
+    'shellHttpBlock',
     'warnAt',
     'summarizeAt',
     'failWarnAt',
