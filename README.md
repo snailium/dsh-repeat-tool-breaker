@@ -475,7 +475,6 @@ at which point `ctx.tools.guard` is the genuine method.
         blockLocalHttp: false       # local addresses stay in the shell — the fetch tool cannot reach them
         shellHttpAllow:             # verbs whose network use is incidental, with no fetch-to-file equivalent
           - git
-          - npm
           - docker
         # web_fetch_file — registered only when the profile has ctx.web
         outputDir: fetched          # relative to the workspace root; /tmp does NOT survive between shell calls
@@ -537,6 +536,53 @@ tuning.
 (The `- insert:` list is required to **add** a new plugin; a flat `- id:` entry is
 a reconfig of an already-present id and fails with "entry not found" for a plugin
 that isn't yet in the composed tree.)
+
+### The settings box (Settings → Plugins)
+
+The knobs an operator is most likely to want mid-session are editable in the Web UI,
+without a restart: open **Settings → Plugins** and expand **Repeat tool breaker**. Seven
+fields — `blockShellHttp`, `blockLocalHttp`, `shellHttpAllow`, `warnAt`, `summarizeAt`,
+`failWarnAt`, `failLimit` — are staged and written on **Save**; a per-field
+`Overridden` badge with a `Reset` stages a clear back to the composition layer. A
+refused write keeps the draft and reports the failure rather than dropping the edit.
+The namespace is registered with `applies: 'live'`, so a saved value takes effect on the
+next call; the change lands in `settings.yaml` under `repeat-tool-breaker:`.
+
+This works because the plugin ships **both halves**, which is a requirement rather than
+an implementation detail. The Plugins page renders the *intersection* of two ledgers:
+
+| Half | What it contributes | Where |
+|---|---|---|
+| Host | the settings namespace and its schema | `ctx.settings.register` in `lib/settings.js` |
+| Browser | a card claiming `settings.plugin.item` under the SAME key | `ctx.slots.register` in `lib/client.js` |
+
+`dsh-client-ui-settings-plugins` hard-codes its own four cards (Shell, Agent loop,
+Subagent, Web search), so a third-party plugin must bring its own. An exported
+`Config` — or `ctx.settings.register` alone — is **not** a card: register a namespace
+with no browser bundle claiming it and nothing renders, with no error anywhere.
+
+The bundle is hand-written plain JS rather than a TypeScript build. A client bundle is
+just a lazy-CJS factory behind `window.__ModuleLoader__.load`, and its only module-table
+dependency is `react` — `slots`, `locale` and `settingsScope` all arrive by injection.
+So there is no bundler, no generated artifact, and nothing to keep in sync.
+
+Two agreements across the wire are asserted by the test suite, because a drift renders
+nothing at all and no compiler sees the seam: the slot key must equal the Host namespace
+(C4), and the card must expose exactly the fields the Host schema declares (C5).
+
+The card needs the **web** surface (`dsh.client.platform: web`) and a profile that
+mounts `@deepseek-ai/dsh-client-ui-settings-plugins`. In a headless or TUI profile the
+bundle is simply never requested, and the namespace stays editable through
+`settings.yaml` as before — nothing about the guard depends on either half being present.
+
+#### Not in the box
+
+`window`, `limits`, `ignoreArgs`, `hostAliases`, `onLimit` and the rest stay in the
+patch layer. They are deployment decisions — a nested table is a poor form control, and
+`limits` in particular is the tune-everything surface that belongs with the profile
+that owns it. The four stage thresholds are in the box *and* absent from the exported
+`Config`: each accepts `null` as its documented off-switch, which a plain
+`z.number()`-based schema would reject at boot.
 
 ### Tuning, and how these numbers were chosen
 
@@ -675,10 +721,10 @@ Two things worth knowing:
 ## Acceptance
 
 ```bash
-npm test          # node --test test/breaker.test.js
+npm test          # node --test test/*.test.js
 ```
 
-58 tests, no model or endpoint required. The suite mirrors the v2 spec's table
+105 tests, no model or endpoint required. The suite mirrors the v2 spec's table
 (T1 ping-pong, T2/T3 description decoys, T4 unrelated calls, T5 curl↔wget, T6
 exclusion, T7 per-agent isolation, T8 volatile flags, T9 normalizer units, T10
 read paths, T11 denied calls still spend budget), adds the plugin-level wiring
@@ -860,12 +906,13 @@ the npm CLI explicitly because Node 22 bundles an older one.
 
 **Verified**
 
-- **Deterministic suite** (`npm test`) — 58 tests covering the full fingerprint
+- **Deterministic suite** (`npm test`) — 105 tests covering the full fingerprint
   matrix, decoy stripping, host folding, sink extraction, the `host:` measure, the
   three occurrence stages, the two failure stages, window arithmetic, per-agent
-  isolation, the user-message reset, the gate's ask/deny outcomes, and the
-  fail-loud config contract. Runs in CI on Node 20 and 22 with no model or
-  endpoint.
+  isolation, the user-message reset, the gate's ask/deny outcomes, the fail-loud
+  config contract, and the two cross-half agreements that make the settings card
+  render (the slot key and the field set). Runs in CI on Node 20 and 22 with no
+  model or endpoint.
 - **Loads and applies on a real DSH boot**, including as a profile bundle (the
   `dsh.bundle` layer mounts the row by package specifier). Verified on
   `@deepseek-ai/dsh` **0.1.2-rc.1** (the reference deployment) and

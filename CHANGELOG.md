@@ -45,12 +45,37 @@ All notable changes to this project are documented here. This project adheres to
   refused or exempted by accident.
 
 - **A settings namespace, so the policy is editable without editing YAML.** The plugin
-  registers `<namespace>` through `ctx.settings.register`, which is what puts a box under
-  Settings → Plugins: `dsh-client-ui-settings-plugins` renders the fields from the
-  schema, and the default `applies: 'live'` means a change takes effect on the next call.
-  The schema's defaults are built FROM the live config, so the box and `lib/defaults.js`
-  cannot drift. Registration is non-blocking, and a failure is recorded in
-  `settingsState` rather than swallowed.
+  registers its namespace through `ctx.settings.register`, so `dsh-settings` layers the
+  patch config under a stored section, and the default `applies: 'live'` means a change
+  takes effect on the next call. The schema's defaults are built FROM the live config, so
+  the box and `lib/defaults.js` cannot drift. Registration is non-blocking, and a failure
+  is recorded in `settingsState` rather than swallowed.
+
+  A namespace alone renders NOTHING. The Plugins page shows the INTERSECTION of the
+  settings namespaces a live Host plugin registered and the cards a browser bundle
+  claimed under the same key, and `dsh-client-ui-settings-plugins` hard-codes its own
+  four cards — so a third-party plugin must ship the other half. That half is below.
+
+- **The browser half: a card under Settings → Plugins, hand-written in plain JS.**
+  `lib/client.js` claims `settings.plugin.item` for this namespace and reproduces the
+  built-in card's look from its own stylesheet, so the card is indistinguishable from a
+  shipped one. All seven namespace fields render — the block policy and the four stage
+  thresholds — with staged edits, per-field `Overridden`/`Reset`, and Save as the single
+  point where a draft becomes a document mutation. A refused write keeps the draft and
+  says so instead of dropping the edit.
+
+  It is hand-written rather than built because the contract is small: a client bundle is
+  a lazy-CJS factory behind `window.__ModuleLoader__.load`, and CSS injection is just
+  part of the module body. `react` is the ONLY entry in the module table this needs —
+  `slots`, `locale` and `settingsScope` all arrive by injection. So the plugin stays
+  build-free: no TypeScript, no bundler, no generated artifact to keep in sync.
+
+  Two agreements between the halves are asserted by the test suite rather than trusted,
+  because neither is checked by any compiler and a drift renders NOTHING at all: the
+  slot key must equal the Host's namespace (C4), and the card must edit exactly the
+  fields the Host schema declares (C5). Verified end-to-end in an isolated preview — a
+  save landed `repeat-tool-breaker: warnAt: 9` in `settings.yaml`, and `Reset` removed
+  it again.
 
   The known hole is asserted rather than pretended, in T47b: a guard sees the command
   text and nothing else, so a fetch inside a file invoked by a NON-http verb

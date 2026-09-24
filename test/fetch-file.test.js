@@ -355,3 +355,38 @@ test('F16: the published package still ships its entry point', async () => {
   // The bundle patch is how a profile mounts the plugin at all.
   assert.equal(manifest.dsh.bundle.patch, './cordis.patch.yml')
 })
+
+test('F17: the published package still ships its browser half', async () => {
+  // The card is invisible unless BOTH halves of the manifest agree: `dsh.client` is what
+  // puts the bundle in the boot graph, and `exports["./client"]` is what the module system
+  // resolves it through. Either one alone is a silent no-op — the settings namespace
+  // registers, the card never renders, and nothing anywhere reports an error.
+  const { readFileSync, existsSync } = await import('node:fs')
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+
+  assert.ok(manifest.dsh.client, '`dsh.client` declares the browser half and must exist')
+  assert.equal(manifest.dsh.client.platform, 'web')
+  assert.ok(Array.isArray(manifest.dsh.client.inject), '`dsh.client.inject` must be an array')
+  for (const dependency of ['@deepseek-ai/dsh-client-ui-settings', '@deepseek-ai/dsh-client-ui-settings-plugins']) {
+    assert.ok(
+      manifest.dsh.client.inject.includes(dependency),
+      `the card needs ${dependency} loaded first (got ${JSON.stringify(manifest.dsh.client.inject)})`,
+    )
+  }
+
+  assert.equal(manifest.exports['./client'].default, './lib/client.js')
+  const clientPath = new URL('../lib/client.js', import.meta.url)
+  assert.ok(existsSync(clientPath), 'the exported browser half must exist on disk')
+  // `lib` is already in `files`; assert it so a future narrowing cannot drop the bundle.
+  assert.ok(manifest.files.includes('lib'), '`files` must include lib/ for the browser half')
+  const source = readFileSync(clientPath, 'utf8')
+  // The loader id must be the package name: the boot graph keys rows by it, so a mismatch
+  // leaves the factory registered under an id nothing ever resolves.
+  assert.ok(
+    source.includes(`id: '${manifest.name}'`),
+    `the bundle must register under the package name ${manifest.name}`,
+  )
+  // react is the only module-table dependency; every service arrives by injection.
+  const required = [...source.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((match) => match[1])
+  assert.deepEqual(required, ['react'], 'only react may be required from the client module table')
+})
