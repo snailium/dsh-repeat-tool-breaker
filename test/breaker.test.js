@@ -1703,3 +1703,49 @@ test('T53: the block honours the fail-loud configuration contract', () => {
   // losing its tuning.
   assert.throws(() => validateCfg(mergeDefaults({ shellHttpAllow: ['git'] })), /shellHttpBlock/)
 })
+
+test('T54: the failure gate scopes to the FAILING TARGET, so the model can pivot', async () => {
+  // The question this answers: after the gate fires five times on one endpoint, is the
+  // model locked out of fetching anything at all? No. `failureHits` intersects the pending
+  // call's fingerprints with the ones whose streak reached `failLimit`, so a call that
+  // shares NO fingerprint with the failing target is allowed — which is what makes a pivot
+  // possible instead of merely telling the model to stop.
+  const { ctx, guards, handlers } = fakeCtx({ web: true })
+  apply(ctx, { blockShellHttp: false, onLimit: 'deny' })
+  const post = handlers.get('tools/post-execute')
+  const noop = async () => ({ kind: 'allow' })
+  const fetchUrl = (url, agent = A) => ({ name: 'web_fetch_file', arguments: { url }, agent })
+
+  // Five 404s against one non-existent endpoint — the shape the operator described.
+  const FAILING = 'https://api.example.com/v1/nonexistent'
+  for (let i = 1; i <= 5; i += 1) {
+    const exec = fetchUrl(FAILING)
+    assert.equal(guards[0](exec), undefined, `attempt ${i} must still be allowed`)
+    await post(exec, { value: { statusCode: 404 } }, noop)
+  }
+
+  // The gate is now closed for that exact target, and for the coarser `host:` measure,
+  // which is deliberate: "the same target again" is what a failing host means.
+  assert.match(String(guards[0](fetchUrl(FAILING))), /REPEAT_TOOL_BLOCKED/)
+  assert.match(String(guards[0](fetchUrl('https://api.example.com/v2/other'))), /REPEAT_TOOL_BLOCKED/)
+
+  // A DIFFERENT WEBSITE is a different `host:` and a different `net:`, and `site:` is
+  // `null` in the default limits so it does not participate in the failure track. The
+  // pivot must be allowed.
+  assert.equal(guards[0](fetchUrl('https://other.example.org/anything')), undefined,
+    'a different host must be allowed: the gate scopes to the failing fingerprint, not to the model')
+
+  // A different SUBDOMAIN of the same registrable domain is also a different `host:`.
+  // Worth pinning, because it is the case where a coarse `site:` rule would have said no.
+  assert.equal(guards[0](fetchUrl('https://www.example.com/anything')), undefined,
+    'site: does not participate in the failure track')
+
+  // And the gate is per fingerprint, not a freeze on the agent: unrelated work runs.
+  assert.equal(guards[0](bash('ls -la /tmp')), undefined)
+  assert.equal(guards[0]({ name: 'read', arguments: { file_path: '/tmp/x' }, agent: A }), undefined)
+
+  // A 200 on the failing target CLEARS its streak, so the gate reopens for it. The
+  // contract is "five consecutive FAILURES", not "five attempts".
+  await post(fetchUrl(FAILING), { value: { statusCode: 200 } }, noop)
+  assert.equal(guards[0](fetchUrl(FAILING)), undefined, 'a success clears the streak and reopens the target')
+})
