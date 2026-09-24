@@ -435,6 +435,10 @@ function fakeCtx() {
   const ctx = {
     tools: { guard: (fn) => { guards.push(fn); return () => {} } },
     on: (event, fn) => { handlers.set(event, fn); return () => {} },
+    // A real context offers scoped, non-blocking `inject`. This double never calls
+    // back, which is exactly a profile WITHOUT a web service — the case where
+    // `web_fetch_file` must not register and the guard must not name it.
+    inject: () => () => {},
   }
   return { ctx, guards, handlers }
 }
@@ -1351,4 +1355,51 @@ test('T45: the write-out rule needs the status FIRST, not anywhere', () => {
     classifyFailure(body, { shell: true, command: 'curl -s -w "%{http_code}" https://x.example.com/' }),
     null,
   )
+})
+
+test('T46: the status is found wherever the write-out format puts it', () => {
+  // Anchoring to the START of the output was an overfit to one session: the format
+  // string is arbitrary, so the status can land anywhere. `-w` is APPENDED after the
+  // body, so the format itself says where it sits — parse it, and match the tail.
+  const shapes = [
+    ['-w "%{http_code}"', '404 https://weather.gc.ca/x.html\n'],
+    ['-w "\\n%{http_code}"', 'some body text\n404'],
+    ['-w "code=%{http_code}"', 'code=404'],
+    ['-w "\\nHTTP %{http_code}\\n"', 'body line\nHTTP 404\n'],
+    ['-w "%{url_effective} %{http_code}"', 'https://weather.gc.ca/x.html 404'],
+    ['-w "%{http_code}"', 'checking\n404'],
+    ['--write-out=%{http_code}', '404'],
+    // Something appended AFTER curl, so the format no longer ends the output: the
+    // licensed scan takes over and reads the LAST status, which is the write-out.
+    ['-w "%{http_code}"; echo done', '404\ndone'],
+  ]
+  for (const [flag, out] of shapes) {
+    const failure = classifyFailure(
+      result({ kind: 'foreground', exitCode: 0, signal: null, timedOut: false }, {
+        content: [{ type: 'text', text: out }],
+      }),
+      { shell: true, command: `curl -s ${flag} "https://weather.gc.ca/x.html"` },
+    )
+    assert.equal(failure?.reason, 'http', `missed: ${flag} -> ${JSON.stringify(out)}`)
+    assert.equal(failure.detail, '404')
+  }
+
+  // A HEAD request's status LINE needs no help from the command at all.
+  const head = classifyFailure(
+    result({ kind: 'foreground', exitCode: 0, signal: null, timedOut: false }, {
+      content: [{ type: 'text', text: 'HTTP/1.1 404 Not Found' }],
+    }),
+    { shell: true, command: 'curl -sI "https://weather.gc.ca/x.html"' },
+  )
+  assert.equal(head?.reason, 'http')
+
+  // A parsed format is definitive in BOTH directions: a 200 must not then be
+  // re-read from the body, where a stray 404 would otherwise match.
+  const okWithNoisyBody = classifyFailure(
+    result({ kind: 'foreground', exitCode: 0, signal: null, timedOut: false }, {
+      content: [{ type: 'text', text: 'this page mentions 404 in passing\n200' }],
+    }),
+    { shell: true, command: 'curl -s -w "%{http_code}" "https://x.example.com/"' },
+  )
+  assert.equal(okWithNoisyBody, null, 'a 200 is a success whatever the page says')
 })

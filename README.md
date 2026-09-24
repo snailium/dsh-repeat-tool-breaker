@@ -470,6 +470,9 @@ at which point `ctx.tools.guard` is the genuine method.
         window: 16                  # recent calls per agent that participate
         onLimit: ask                # ask | deny — what happens at either gate
         localHosts: deny            # deny | allow — see "Local addresses"
+        # web_fetch_file — registered only when the profile has ctx.web
+        outputDir: fetched          # relative to the workspace root; /tmp does NOT survive between shell calls
+        maxBytes: 8388608           # our own cap; the web provider caps first
         warnAt: 7                   # occurrence stage 1; 0 / negative / null disables it
         summarizeAt: 11             # occurrence stage 2; 0 / negative / null disables it
         failWarnAt: 3               # failure stage 1; same off-switch as `warnAt`

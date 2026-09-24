@@ -84,6 +84,7 @@ import {
   warnMessage,
 } from './lib/message.js'
 import { classifyFailure } from './lib/failure.js'
+import { fetchFileToolState, registerFetchFileTool } from './lib/fetch-file.js'
 import { createTracker, hasUserMessage } from './lib/window.js'
 import { mergeDefaults, validateCfg } from './lib/defaults.js'
 
@@ -307,6 +308,12 @@ export function apply(ctx, config = {}) {
     return undefined
   }
 
+  // `web_fetch_file` is registered only when the profile actually has the web
+  // service. It is the replacement a denial points at, so the guard must know
+  // whether it exists -- naming a tool a profile does not have is worse than
+  // naming nothing.
+  registerFetchFileTool(ctx, { outputDir: cfg.outputDir, maxBytes: cfg.maxBytes })
+
   const disposeGuard = ctx.tools.guard(guard)
   if (typeof disposeGuard === 'function') teardown.push(disposeGuard)
 
@@ -404,6 +411,6 @@ export function apply(ctx, config = {}) {
   }
 }
 
-export { isTracked }
+export { fetchFileToolState, isTracked }
 
 export default { name, inject, apply }

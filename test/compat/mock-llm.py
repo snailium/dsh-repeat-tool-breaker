@@ -97,6 +97,18 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get('Content-Length', '0'))
         payload = json.loads(self.rfile.read(length) or b'{}')
         tool_results = sum(1 for m in payload.get('messages') or [] if m.get('role') == 'tool')
+        # Dump the tool list ONCE: it is the live proof that a plugin's tool
+        # registered in this real (headless) boot, which no config dump shows.
+        if not getattr(self.server, '_tools_dumped', False):
+            names = sorted(n for n in (t.get('function', {}).get('name') for t in payload.get('tools') or []) if n)
+            sys.stderr.write('[mock] tools: ' + ', '.join(names) + '\n')
+            # Also to a caller-chosen path: the mock's own log is a mktemp file, so
+            # without this a harness could not assert what the model was offered.
+            dump = os.environ.get('MOCK_TOOLS_DUMP')
+            if dump:
+                with open(dump, 'w', encoding='utf-8') as fh:
+                    fh.write('\n'.join(names) + '\n')
+            self.server._tools_dumped = True
         sys.stderr.write(f'[mock] {len(payload.get("messages") or [])} messages, {tool_results} tool results\n')
         sys.stderr.flush()
 
