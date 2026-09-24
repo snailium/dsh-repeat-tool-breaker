@@ -575,6 +575,45 @@ mounts `@deepseek-ai/dsh-client-ui-settings-plugins`. In a headless or TUI profi
 bundle is simply never requested, and the namespace stays editable through
 `settings.yaml` as before — nothing about the guard depends on either half being present.
 
+### Re-deriving `shellHttpAllow`
+
+The default `['git', 'docker']` is a claim about what agents actually do, so it ships with
+the tool that measures it. Point the scan at one or more `sessions/` directories and it
+replays every recorded shell call through this plugin's own detector:
+
+```bash
+node tools/shell-http-allowlist-scan.mjs ~/.dsh/sessions ~/harness-home/sessions
+
+# logs=225 shell_calls=27539 calls_with_a_remote_url=4457
+# allowlist=["git","docker"]
+#
+# verb                      segments  exempt
+# curl                          3424  NO
+# git                            370  yes
+# docker                          12  yes
+# wget                             7  NO
+# ...
+#
+# refused CALLS: 4081
+#   TARGET (names curl/wget or an interpreter fetch): 4029
+#   INCIDENTAL (carries a URL, fetches nothing):      52
+```
+
+The verdict splits in two, which is the number that actually matters:
+
+- **`curl`, `git`, `docker` are the whole story.** `wget` is the only other real
+  downloader and is deliberately not exempt — it has the same fetch-to-file equivalent
+  `curl` does. `npm`, `pip`, `uv`, `apt`, `go`, `cargo`, `npx` and `gh` never carried a
+  remote URL at all; their URL-less forms (`npm install foo`) are not blocked either, so
+  exempting them would be speculation rather than caution.
+- **The rest of the verb table is detector noise, not evidence.** The long tail — `old`,
+  `new`, `the`, `for` — is Python variable names and shell fragments inside multi-line
+  scripts, which is exactly why the block is described as a command-level rule with a
+  known hole rather than a containment boundary.
+- **The block's cost is 1.3%**: 52 calls that carry a URL without fetching anything (an
+  `echo "see https://…"`, a heredoc rewriting a README). A command-level rule cannot tell
+  those from a real fetch.
+
 #### Not in the box
 
 `window`, `limits`, `ignoreArgs`, `hostAliases`, `onLimit` and the rest stay in the

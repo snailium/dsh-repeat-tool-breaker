@@ -32,13 +32,24 @@ All notable changes to this project are documented here. This project adheres to
     own retrieval and inherits its SSRF guard, so it CANNOT reach loopback or RFC1918.
     Refusing local fetches would leave no way to do them at all.
   - **Verbs whose network use is incidental** (`shellHttpAllow`), default `['git',
-    'docker']`. That default is EVIDENCE-LED, not guessed: a scan of every recorded
-    session — 11006 shell calls, 3392 fetching a remote URL — found exactly three verbs
-    that make a network request, `curl` (3012), `git` (95) and `docker` (6). `curl` is
-    the block's target; the other two have no fetch-to-file equivalent, so refusing them
-    removes a capability. `wget`, `npm`, `pip`, `apt`, `gh` and the rest never carried a
-    remote URL in the corpus and are NOT exempted on speculation — add one from the
-    settings box when a real workflow needs it. Set the list to `[]` to refuse all.
+    'docker']`. That default is EVIDENCE-LED, not guessed. `tools/shell-http-allowlist-scan.mjs`
+    replays the whole recorded corpus through the plugin's own detector, so the claim is
+    reproducible rather than asserted. Over 225 logs / 27,539 shell calls / 4,457 calls
+    carrying a remote URL, the only verbs that ever appear are `curl` (3424 segments),
+    `git` (370) and `docker` (12) — plus `wget` (7), which is deliberately NOT exempt
+    because it has the same fetch-to-file equivalent `curl` does. `npm`, `pip`, `uv`,
+    `apt`, `go`, `cargo`, `npx`, `gh` and the rest never carried a remote URL at all, and
+    their URL-less forms are not blocked anyway — only a URL/VCS-carrying form is, so
+    exempting them would be speculation. Add one from the settings box when a real
+    workflow needs it. Set the list to `[]` to refuse all.
+
+    The same scan measures what the block COSTS. Of the 4,081 refused calls, 4,029 name a
+    downloader or an interpreter fetch — refusing those is the feature. The other 52
+    (1.3%) merely carry a URL without fetching anything, and are refused because a
+    command-level rule cannot tell `curl https://…` from a heredoc rewriting a README
+    full of links. That is the honest price of the rule, and it is the reason the
+    per-segment attribution below reports nonsense "verbs" like `old` and `new` on those
+    calls: they are Python variable names inside a `python3 - <<'PY'` script.
 
   The exemption is attributed PER COMMAND SEGMENT, not per string: `cd /x && git clone
   https://…` otherwise reads as `cd`, and a fetch hidden behind a prefix verb would be
