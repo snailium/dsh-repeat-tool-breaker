@@ -5,58 +5,67 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
-### Fixed
-
-- **The write-out status is found wherever the format puts it, not only at the start.**
-  0.5.3 recognised a bare `404` only when it LED the output, which was an overfit to the
-  one session that had been reported: the `-w` format string is arbitrary, so the status
-  can land after a prefix, on its own line, after the URL, or behind an `echo`. Measured,
-  **7 of 9 realistic shapes were missed**.
-
-  `-w` output is appended after the body, so the format string itself says where the status
-  sits: it is now parsed — literals escaped, other placeholders becoming wildcards, the
-  status becoming a capture — and matched against the tail. A parsed format is definitive
-  in both directions, so a `200` is a success whatever the page happens to contain. The
-  last-status scan remains as the fallback for a command that appends something after
-  curl. An HTTP status LINE (`HTTP/1.1 404 Not Found`, `HTTP/2 404`) is now recognised too,
-  which needs no help from the command at all.
-
 ### Added
 
+- **Shell HTTP is refused, and the model is sent to `web_fetch_file`.** Detection is
+  SEMANTIC and destination-based, not by command name: a shell call is refused when it
+  targets a non-local URL. Measured on the shapes that matter, that covers `curl`,
+  `wget`, `/usr/bin/curl`, a `python3 -c` one-liner, a `node -e`, and any command
+  carrying the literal destination. Enumerating downloader names would have missed the
+  interpreters and been defeated by an absolute path in one step.
+
+  The refusal is flat — it fires on the FIRST fetch and never asks — and it is the
+  reason the `-w` detection below could be deleted: once this class of call cannot
+  happen, the failure track's input is a tool's structured `statusCode` rather than an
+  inference from shell text.
+
+  Two deliberate exceptions, both because blocking them would remove a capability
+  rather than redirect one:
+
+  - **Local addresses** (`blockLocalHttp`, default off). `web_fetch_file` reuses dsh's
+    own retrieval and inherits its SSRF guard, so it CANNOT reach loopback or RFC1918.
+    Refusing local fetches would leave no way to do them at all.
+  - **Verbs whose network use is incidental** (`shellHttpAllow`): `git`, `npm`, `docker`,
+    `pip`, `apt`, … A `git clone` has no fetch-to-file equivalent. Set the list to `[]`
+    to refuse those too.
+
+  The known hole is asserted rather than pretended, in T47b: a guard sees the command
+  text and nothing else, so a fetch inside a file invoked by a NON-http verb
+  (`bash /tmp/fetch.sh`) is invisible. Closing that needs the capability removed, not a
+  better rule. The hole is narrower than it looks — an HTTP verb blocks even with no URL
+  in sight, and an inline literal is visible even after a variable assignment.
+
 - **`web_fetch_file`: fetch a URL to a FILE, returning the path instead of the body.**
-  It lives in this plugin rather than beside it because the guard will eventually deny a
-  shell fetch and name its replacement — and a message naming a tool the profile does not
-  have is worse than no message, so the denial and the replacement must ship together.
+  It lives in this plugin rather than beside it because the refusal above names it, and
+  a message naming a tool the profile does not have is worse than no message.
 
   It solves two problems, both measured:
 
-  - **Context.** `web_fetch` returns the body to the model. A reported run died on context
-    size after fetching a handful of weather pages, and the pages were the reason. Here
-    only `{ path, statusCode, bytes, kind, truncated }` travels back, so a long document
-    costs the same as a short one: a path.
-  - **Failure.** Shell HTTP hides its own outcome — `curl` exits 0 for a 404 without
-    `--fail`, and a piped or `-o /dev/null` or `|| true` shell can leave a failed fetch
-    with no in-band evidence at all. A tool call cannot be masked that way: the status is
-    the tool's own structured output, so `statusCode` is a fact rather than an inference.
-    A 404 returns `statusCode: 404` and still saves the body.
+  - **Context.** `web_fetch` returns the body to the model. A reported run died on
+    context size after fetching a handful of weather pages, and the pages were the
+    reason. Here only `{ path, statusCode, bytes, kind, truncated }` travels back.
+  - **Failure.** Shell HTTP hides its own outcome. A tool call cannot be masked the way
+    a shell command can, so a 404 comes back as `statusCode: 404` — a fact.
 
-  Over 3367 measured shell fetches, 70% piped the body into another command, 23% wrote it
-  to a file, 4% hit localhost, 2% posted data, and 1% printed the body for the model. This
-  replaces the first two, as two steps — which is how the pipeline worked anyway:
-  `web_fetch_file(url)` then `bash: jq '.items' <path>`.
+  Over 3367 measured shell fetches, 70% piped the body into another command and 23%
+  wrote it to a file. This replaces those two as two steps, which is how the pipeline
+  worked anyway: `web_fetch_file(url)` then `bash: jq '.items' <path>`.
 
-  Retrieval goes through dsh's own `ctx.web`, so it reuses the built-in provider, redirect
-  and timeout handling, and **the SSRF guard unchanged**: a loopback URL fails with
-  `WEB_BLOCKED_URL`, which means local addresses stay a shell concern. That is deliberate —
-  a fetch tool that can reach the loopback interface is an SSRF primitive.
+  Retrieval goes through dsh's own `ctx.web`, so it reuses the built-in provider and
+  inherits the SSRF guard unchanged. It registers through `ctx.inject(['web'], …)`, so
+  the breaker still loads with no web service, and is verified to appear in a real
+  headless boot. The definition is plain JSON Schema rather than `defineTool`'s output,
+  because a symlink-installed plugin resolves a bare specifier from its real path,
+  where `@deepseek-ai/dsh-tools` is absent — that import failed SILENTLY.
 
-  It registers through `ctx.inject(['web'], …)`, so the breaker still loads in profiles
-  with no web service; `fetchFileToolState.registered` tells the guard which world it is
-  in. The definition is written as plain JSON Schema rather than compiled by `defineTool`,
-  because a symlink-installed plugin resolves a bare specifier from its own real path,
-  where `@deepseek-ai/dsh-tools` is absent — that import fails silently and the tool simply
-  never appears.
+### Removed
 
+- **The `-w` write-out detection, added in 0.5.3 and generalised afterwards.** With shell
+  HTTP refused, a `curl -w "%{http_code}"` can no longer run, so the whole rule — the
+  format-string parsing, the tail match, the status-line marker and the `command`
+  argument to `classifyFailure` — is unreachable. It is deleted rather than left in
+  place: dead detection code is what produced the 0.4.0 misdiagnosis, where a
+  measurement tool counted messages production could no longer deliver.
 
 ## [0.5.3] - 2026-09-22
 

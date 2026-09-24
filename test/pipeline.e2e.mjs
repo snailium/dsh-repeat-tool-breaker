@@ -282,7 +282,7 @@ async function makeFailureRuntime(config) {
  * @returns whether every invariant held.
  */
 async function failureScenario() {
-  const { call } = await makeFailureRuntime({ onLimit: 'deny' })
+  const { call } = await makeFailureRuntime({ onLimit: 'deny', blockShellHttp: false })
   const agent = { id: 'failing-agent' }
   const target = 'curl -s https://api.does-not-exist.invalid/v1/items'
   const FAIL_WARN = DEFAULTS.failWarnAt
@@ -332,13 +332,20 @@ async function failureScenario() {
   return ok
 }
 
-// 1. The hard break, asserted exactly.
-const denyOk = await scenario('onLimit=deny', { onLimit: 'deny' }, 'REPEAT_TOOL_BLOCKED')
+// 1. The hard break, asserted exactly. The shell HTTP block is switched OFF here:
+//    these scenarios exercise the ESCALATION gate, and their probes are remote URLs
+//    that the block would refuse on the first call. The block has its own scenario in
+//    the compat harness, where a real headless boot proves it.
+const denyOk = await scenario('onLimit=deny', { onLimit: 'deny', blockShellHttp: false }, 'REPEAT_TOOL_BLOCKED')
 // 2. The shipped default — `onLimit: ask` with NO approver registered, which is
 //    exactly a headless profile. It must STILL block: the gate is fail-closed. The
 //    model sees the approval-unavailable text rather than REPEAT_TOOL_BLOCKED, and
 //    that degradation is the documented behaviour, not a leak.
-const askOk = await scenario('onLimit=ask (no approver)', {}, 'about to be blocked as a repeat')
+const askOk = await scenario(
+  'onLimit=ask (no approver)',
+  { blockShellHttp: false },
+  'about to be blocked as a repeat',
+)
 
 const failureOk = await failureScenario()
 

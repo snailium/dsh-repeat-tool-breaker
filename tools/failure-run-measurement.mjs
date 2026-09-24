@@ -94,7 +94,7 @@ function resultText(data) {
  * reason this measurement cannot be exact, and it is why the classifier is reused
  * rather than reimplemented: the parts that CAN be reconstructed behave identically.
  */
-function classify(data, toolName, command) {
+function classify(data, toolName) {
   const text = resultText(data)
   const status = data.meta?.statusCode
   const reconstructed = {
@@ -103,7 +103,7 @@ function classify(data, toolName, command) {
     content: [{ type: 'text', text }],
     value: typeof status === 'number' ? { statusCode: status } : undefined,
   }
-  const failure = classifyFailure(reconstructed, { shell: isShell(toolName), command })
+  const failure = classifyFailure(reconstructed, { shell: isShell(toolName) })
   return failure === null ? null : failure
 }
 
@@ -160,7 +160,7 @@ for (const log of logs) {
     } catch {
       fps = []
     }
-    const failure = classify(data, call.name, typeof call.args?.command === 'string' ? call.args.command : '')
+    const failure = classify(data, call.name)
     sequence.push({ fps, failed: failure !== null })
   }
   if (sequence.length === 0) continue

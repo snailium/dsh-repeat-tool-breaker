@@ -470,6 +470,13 @@ at which point `ctx.tools.guard` is the genuine method.
         window: 16                  # recent calls per agent that participate
         onLimit: ask                # ask | deny — what happens at either gate
         localHosts: deny            # deny | allow — see "Local addresses"
+        # Refuse HTTP made from the shell; send the model to web_fetch_file instead.
+        blockShellHttp: true        # semantic: any shell call targeting a non-local URL
+        blockLocalHttp: false       # local addresses stay in the shell — the fetch tool cannot reach them
+        shellHttpAllow:             # verbs whose network use is incidental, with no fetch-to-file equivalent
+          - git
+          - npm
+          - docker
         # web_fetch_file — registered only when the profile has ctx.web
         outputDir: fetched          # relative to the workspace root; /tmp does NOT survive between shell calls
         maxBytes: 8388608           # our own cap; the web provider caps first

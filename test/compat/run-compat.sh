@@ -73,7 +73,7 @@ run_scenario() {
   rm -rf "$COMPAT_HOME/sessions"
   DSH_HOME="$COMPAT_HOME" MOCK_API_KEY=mock timeout 600 "$DSH_BIN" --profile probe "compat check" 2>&1 | tail -3
   COMPAT_HOME="$COMPAT_HOME" EXPECT_EXECUTED="$expected_executed" EXPECT_TOTAL="$expected_total" \
-    LABEL="$label" EXPECT_ADVISORY="${EXPECT_ADVISORY:-}" python3 - <<'PY'
+    LABEL="$label" EXPECT_ADVISORY="${EXPECT_ADVISORY:-}" EXPECT_DENIAL="${EXPECT_DENIAL:-}" python3 - <<'PY'
 import glob, json, os, subprocess, sys
 
 home = os.environ['COMPAT_HOME']
@@ -113,6 +113,12 @@ if len(executed) != expected_executed:
     sys.exit(f'FAIL: expected {expected_executed} executed attempts, saw {len(executed)}')
 if len(denied) != expected_total - expected_executed:
     sys.exit(f'FAIL: expected {expected_total - expected_executed} denied attempts, saw {len(denied)}')
+denial = os.environ.get('EXPECT_DENIAL', '')
+if denial:
+    if denial not in whole_log:
+        sys.exit(f'FAIL: the denial text {denial!r} never reached the model')
+    print(f'  -> denial carried: {denial!r}')
+
 advisory = os.environ.get('EXPECT_ADVISORY', '')
 if advisory:
     # The advisory is a plugin notice: it reaches the model as its own user-role
@@ -122,12 +128,15 @@ if advisory:
         sys.exit(f'FAIL: the session never carried the expected advisory {advisory!r}')
     print(f'  -> advisory delivered: {advisory!r}')
 
-breaker = [t for _, t in denied if 'REPEAT_TOOL_BLOCKED' in t]
+# Both markers are the breaker's own: the escalation gate's repeat denial and the
+# shell HTTP block's refusal. Either means the model was told WHY it was stopped.
+markers = ('REPEAT_TOOL_BLOCKED', 'SHELL_HTTP_BLOCKED')
+breaker = [t for _, t in denied if any(m in t for m in markers)]
 if denied and not breaker:
     sys.exit('FAIL: no denied attempt carried the breaker\'s own message: '
              + repr([t[:120] for _, t in denied]))
 print(f'  -> {len(executed)} executed, {len(denied)} denied, '
-      f'{len(breaker)} with REPEAT_TOOL_BLOCKED')
+      f'{len(breaker)} with the breaker\'s own message')
 PY
 }
 
@@ -215,7 +224,7 @@ run_scenario "local loop on one path, no answerer (localHosts=$POLICY)" "$((CAP 
 # the regression test for the 0.3.2 fix: `net:` used to discard the query, which
 # merged every page into one resource.
 run_scenario "pagination of one endpoint (must never block)" 8 8 \
-  MOCK_REPEATS=8 MOCK_PAGE_BASE=https://api.github.invalid/repos/o/r/commits
+  MOCK_REPEATS=8 MOCK_PAGE_BASE=http://127.0.0.1:9/repos/o/r/commits
 
 echo
 
@@ -236,5 +245,15 @@ EXPECT_ADVISORY="has failed $FAIL_WARN times in a row" \
   run_scenario "consecutive failures (limit $FAIL_LIMIT)" "$FAIL_LIMIT" "$((FAIL_LIMIT + 3))" \
   MOCK_REPEATS="$((FAIL_LIMIT + 3))" \
   MOCK_COMMAND="curl -s --max-time 3 http://127.0.0.1:9/missing-endpoint"
+
+
+# Scenario 5 — the SHELL HTTP BLOCK. A remote fetch from the shell is refused on the
+# first call, never asks, and the denial tells the model what to use instead. The URL
+# is remote on purpose: local addresses are exempt (the fetch tool inherits the SSRF
+# guard and cannot reach them).
+echo "=== shell HTTP block (remote fetch refused, tool named) ==="
+EXPECT_DENIAL="SHELL_HTTP_BLOCKED" \
+  run_scenario "remote curl is refused" 0 2 \
+  MOCK_REPEATS=2 MOCK_COMMAND="curl -s https://weather.gc.ca/historical_data/search_historic_data_e.html"
 
 echo "COMPAT: PASS"

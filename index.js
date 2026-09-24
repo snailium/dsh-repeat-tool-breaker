@@ -80,6 +80,7 @@ import {
   denyMessage,
   failWarnMessage,
   renderResult,
+  shellHttpBlockedMessage,
   summarizeMessage,
   warnMessage,
 } from './lib/message.js'
@@ -87,6 +88,7 @@ import { classifyFailure } from './lib/failure.js'
 import { fetchFileToolState, registerFetchFileTool } from './lib/fetch-file.js'
 import { createTracker, hasUserMessage } from './lib/window.js'
 import { mergeDefaults, validateCfg } from './lib/defaults.js'
+import { firstVerb } from './lib/normalize.js'
 
 /** Stable plugin identifier. */
 export const name = 'repeat-tool-breaker'
@@ -205,6 +207,40 @@ export function apply(ctx, config = {}) {
   }
 
   /**
+   * Whether this shell call is an HTTP fetch that the block covers.
+   *
+   * The test is SEMANTIC and destination-based, so it does not care how the request
+   * is made: `curl`, `wget`, a `python3 -c` one-liner, a `node -e`, an absolute
+   * `/usr/bin/curl`, or a script run by name all carry the destination in the
+   * command text. Enumerating downloader names would have missed the interpreters
+   * and been defeated by an absolute path.
+   *
+   * `host:` is the non-local-target marker: with the shipped `includeLocal: false`
+   * it is emitted ONLY for a non-local host, so a call carrying one is fetching
+   * something remote. `family:http-fetch` covers an HTTP verb with no URL in the
+   * text (`curl --config …`). A purely local call carries neither, which is what
+   * keeps localhost usable -- see `blockLocalHttp` for why that matters.
+   *
+   * @param fps - the call's fingerprints.
+   * @param local - whether every URL in the call was local.
+   * @returns whether the call is a covered HTTP fetch.
+   */
+  const isBlockedShellHttp = (fps, local, command) => {
+    if (cfg.blockShellHttp !== true) return false
+    // An incidental fetch by a local tool (a package manager, `git`) is left alone:
+    // there is no fetch-to-file equivalent, so blocking it removes the capability
+    // instead of redirecting it. See `shellHttpAllow`.
+    if (cfg.shellHttpAllow.length > 0 && cfg.shellHttpAllow.includes(firstVerb(command))) return false
+    const remote = local !== true && fps.some((fp) => fp.startsWith('host:'))
+    const httpVerb = fps.includes('family:http-fetch')
+    if (remote || (httpVerb && local !== true)) return true
+    if (cfg.blockLocalHttp === true && local === true) {
+      return fps.some((fp) => fp.startsWith('net:'))
+    }
+    return false
+  }
+
+  /**
    * Which advisory stage, if any, this call reaches — read BEFORE the call is
    * committed, so `count` includes it.
    *
@@ -276,6 +312,23 @@ export function apply(ctx, config = {}) {
     const { name, agent } = parts(exec)
     if (agent === null || !tracked(name)) return undefined
 
+    // The HTTP block is a flat refusal, not an escalation: it fires on the FIRST
+    // fetch, it never asks, and it does not depend on a count. Asking would defeat
+    // the purpose -- the point is that this class of call cannot happen, so that
+    // every fetch goes through a tool whose status is a fact.
+    if (isShell(name)) {
+      const { fps: blockFps, local } = fingerprints(exec, cfg)
+      const { args } = parts(exec)
+      if (isBlockedShellHttp(blockFps, local, typeof args?.command === 'string' ? args.command : '')) {
+        deniedByUs.add(exec)
+        return shellHttpBlockedMessage({
+          name,
+          toolAvailable: fetchFileToolState.registered,
+          localAllowed: cfg.blockLocalHttp !== true,
+        })
+      }
+    }
+
     // Reaching the guard with a pending ask means the operator approved it.
     const approved = pendingAsk.get(exec)
     if (approved !== undefined) {
@@ -327,7 +380,7 @@ export function apply(ctx, config = {}) {
   // downstream block's decision is preserved and the context composes with it
   // instead of replacing it.
   const onPost = ctx.on('tools/post-execute', async (exec, result, next) => {
-    const { name, agent, args } = parts(exec)
+    const { name, agent } = parts(exec)
     let failureAdvisory
     if (agent !== null && tracked(name)) {
       const pending = pendingAsk.get(exec)
@@ -351,10 +404,7 @@ export function apply(ctx, config = {}) {
         // `shell` gates the text fallback: a shell's exit code is masked by
         // pipelines, so its text is the only remaining evidence; other tools answer
         // through their structured value and must not be guessed at from prose.
-        const failure = classifyFailure(result, {
-          shell: isShell(name),
-          command: typeof args?.command === 'string' ? args.command : '',
-        })
+        const failure = classifyFailure(result, { shell: isShell(name) })
         const warned = tracker.noteOutcome(agent, fps, failure)
         if (warned.length > 0) {
           // Name the longest streak. A tie is broken by `measureRank` for the same
