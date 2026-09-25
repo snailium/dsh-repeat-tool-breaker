@@ -86,51 +86,123 @@ import {
 } from './lib/message.js'
 import { classifyFailure } from './lib/failure.js'
 import { createFetchFileState, fetchFileToolState, registerFetchFileTool } from './lib/fetch-file.js'
-import { registerSettings, settingsState } from './lib/settings.js'
 import { createTracker, hasUserMessage } from './lib/window.js'
 import { DEFAULTS, mergeDefaults, validateCfg } from './lib/defaults.js'
 import { blockShellHttp } from './lib/block-policy.js'
 
 import z from '@deepseek-ai/schemastery'
 
+/**
+ * Fields `Config` declares as `union([number, const(null)])`, so an unset one means the
+ * documented off-switch rather than a missing value.
+ *
+ * Spelled out because the resolved handle does not carry its own nullability, and the
+ * alternative — inferring it — is what produced the mismatch this list fixes. A unit test
+ * asserts that every name here is declared nullable in `Config`, so the two cannot drift.
+ */
+const NULLABLE_SETTINGS = ['summarizeAt', 'failLimit']
+
+/**
+ * Resolve a config field to its plain value.
+ *
+ * A `volatile()` field (see `Config`) is delivered as a live handle with `.get()`; every
+ * other field is already plain. One wrinkle is worth spelling out: a union field whose
+ * `.default(null)` is inherited resolves to `undefined` rather than `null`, so an unset
+ * off-switch would arrive as `undefined` — and `undefined` does NOT disable a stage the way
+ * the documented `null` does. {@link plainConfig} normalises exactly the fields listed in
+ * {@link NULLABLE_SETTINGS}, which keeps the documented contract.
+ *
+ * @param value - a resolved config field.
+ * @returns the plain value.
+ */
+function plainField(value) {
+  return value !== null && typeof value === 'object' && typeof value.get === 'function'
+    ? value.get()
+    : value
+}
+
+/** Every field of a resolved config, with volatile handles resolved. */
+function plainConfig(config) {
+  if (config === null || typeof config !== 'object') return {}
+  return Object.fromEntries(
+    Object.entries(config).map(([key, value]) => {
+      const plain = plainField(value)
+      return [key, NULLABLE_SETTINGS.includes(key) && plain === undefined ? null : plain]
+    }),
+  )
+}
+
+/**
+ * The producer-owned message source kind for session format 4 (dsh 0.1.7), which replaced
+ * the retired `kind: 'plugin'` wrapper. Exported so the test suite asserts against it
+ * rather than a copied literal.
+ */
+export const SOURCE_KIND = 'plugin:dsh-repeat-tool-breaker'
+
 /** Stable plugin identifier. */
 export const name = 'repeat-tool-breaker'
 
 /**
- * The deployment-level schema: what this plugin's bundle patch entry may set.
+ * The plugin's configuration schema — and, since dsh 0.1.7, the SETTINGS FORM.
  *
- * `cordis.resolveConfig` fills these defaults into the patch config and keeps every key
- * this schema does not mention, so a PARTIAL schema is safe and the rest of the
- * configuration (the `limits` table, `ignoreArgs`, …) still reaches `apply`.
+ * In 0.1.5 a plugin registered a settings namespace imperatively
+ * (`ctx.settings.register(name, schema, { base })`) and this exported schema was only the
+ * deployment surface for the patch layer. 0.1.7 removed that call: `SettingsForms.schema()`
+ * reads `entry.fiber.runtime.Config`, so the schema below is what the Plugins page renders.
+ * One declaration now serves both layers, and the imperative registration is gone.
  *
- * This schema does not render a settings box. The Plugins page shows the INTERSECTION of
- * the settings namespaces a live Host plugin registered and the cards a browser bundle
- * claimed under the same key: `lib/settings.js` registers the namespace, `lib/client.js`
- * claims it. An exported `Config` is not on that path — the four built-in cards are
- * hard-coded inside `@deepseek-ai/dsh-client-ui-settings-plugins`.
+ * `volatile()` is what makes a field appear at all. `volatileForm()` keeps only fields whose
+ * nearest volatile ancestor is marked, and an entry with no such field is SKIPPED — so a
+ * schema without `volatile()` is a schema with no form. Volatile also means "editable
+ * without remounting", which is why the resolved value arrives as a live handle and is read
+ * with `.get()` rather than snapshotted (see `readCfg`).
  *
- * Only the block policy appears here, because this is a DEPLOYMENT surface: the fields a
- * profile patch is expected to set. The operator-facing knobs — the same block policy plus
- * the stage thresholds — live in the settings namespace, where they change without a
- * restart. The thresholds are absent from BOTH surfaces for one reason: each accepts `null`
- * as its documented off-switch, and a plain `z.number()` would reject the null, turning a
- * supported setting into a boot failure.
+ * `cordis.resolveConfig` still fills the defaults and keeps every key this schema does not
+ * mention, so a PARTIAL schema is safe: the `limits` table, `ignoreArgs`, `hostAliases`,
+ * `window` and the rest keep reaching `apply` from the patch layer.
+ *
+ * The four stage thresholds accept `null` as their documented off-switch, so they are
+ * declared as a union rather than a bare number — a plain `z.number()` would reject the
+ * null and turn a supported setting into a boot failure.
  */
 export const Config = z.object({
   blockShellHttp: z
     .boolean()
     .default(DEFAULTS.blockShellHttp)
-    .description('Refuse HTTP fetches made from the shell and send the model to web_fetch_file.'),
+    .description('Refuse HTTP fetches made from the shell and send the model to web_fetch_file.')
+    .volatile(),
   blockLocalHttp: z
     .boolean()
     .default(DEFAULTS.blockLocalHttp)
-    .description('Also refuse local (loopback/RFC1918) fetches. Off because web_fetch_file cannot reach them.'),
+    .description('Also refuse local (loopback/RFC1918) fetches. Off because web_fetch_file cannot reach them.')
+    .volatile(),
   shellHttpBlock: z
     .array(z.string())
     .default([...DEFAULTS.shellHttpBlock])
     .description(
       'Commands the block REFUSES. The block is a blacklist: a command is refused when its verb is on this list, or when an interpreter program names a request API. Defaults are the raw HTTP clients plus the file/streaming downloaders, which all have web_fetch_file as a replacement.',
-    ),
+    )
+    .volatile(),
+  warnAt: z
+    .number()
+    .default(DEFAULTS.warnAt)
+    .description('Occurrence stage 1: repeats of one call before the light advisory. 0, negative or null disables it.')
+    .volatile(),
+  summarizeAt: z
+    .union([z.number(), z.const(null)])
+    .default(DEFAULTS.summarizeAt)
+    .description('Occurrence stage 2: repeats before the call must summarize its progress. null disables it.')
+    .volatile(),
+  failWarnAt: z
+    .number()
+    .default(DEFAULTS.failWarnAt)
+    .description('Failure stage 1: consecutive failures before the advisory. 0, negative or null disables it.')
+    .volatile(),
+  failLimit: z
+    .union([z.number(), z.const(null)])
+    .default(DEFAULTS.failLimit)
+    .description('Failure gate: consecutive failures before the call is refused. null keeps the advisory and drops the gate.')
+    .volatile(),
 })
 
 /** Injected cordis services required before `apply` runs. */
@@ -191,7 +263,11 @@ function noticeMessage(text, summary) {
     id: messageId(),
     role: 'user',
     content: Object.freeze([Object.freeze({ type: 'text', text })]),
-    source: Object.freeze({ kind: 'plugin', plugin: name, form: 'notice', summary }),
+    // SESSION FORMAT 4 (dsh 0.1.7) producer-owned source. Format 3 wanted
+    // `{ kind: 'plugin', plugin: <package> }` and format 4 REJECTS that shape, so the two
+    // are mutually exclusive and this release targets one generation rather than probing:
+    // 0.8.x is the dsh 0.1.7 line, 0.7.x remains the 0.1.5 line.
+    source: Object.freeze({ kind: SOURCE_KIND, form: 'notice', summary }),
   })
 }
 
@@ -202,7 +278,17 @@ function noticeMessage(text, summary) {
  * @returns a teardown function.
  */
 export function apply(ctx, config = {}) {
-  const cfg = validateCfg(mergeDefaults(config))
+  // The config is a SNAPSHOT of values but must not be a snapshot of the SETTINGS: a
+  // volatile field resolves to a live handle, and the operator can change it while this
+  // instance is running. So the same object is refreshed in place from `config` before
+  // every hook reads it — mutating rather than replacing keeps the identity the tracker
+  // and the compiled matchers closed over.
+  const cfg = validateCfg(mergeDefaults(plainConfig(config)))
+  function refresh() {
+    const next = validateCfg(mergeDefaults(plainConfig(config)))
+    for (const key of Object.keys(next)) cfg[key] = next[key]
+  }
+
   const tracker = createTracker(cfg)
   const tracked = compileTracked(cfg)
   /**
@@ -329,6 +415,7 @@ export function apply(ctx, config = {}) {
    * has no way to ask.
    */
   const onPre = ctx.on('tools/pre-execute', async (exec, next) => {
+    refresh()
     if (cfg.onLimit !== 'ask') return next()
     const { name, agent } = parts(exec)
     if (agent === null || !tracked(name)) return next()
@@ -347,6 +434,7 @@ export function apply(ctx, config = {}) {
    * await, resolve DNS, or touch the disk.
    */
   const guard = (exec) => {
+    refresh()
     const { name, agent } = parts(exec)
     if (agent === null || !tracked(name)) return undefined
 
@@ -399,26 +487,6 @@ export function apply(ctx, config = {}) {
   // written back onto `cfg`, which is what makes it LIVE: `stageAdvisory` and the
   // tracker both read `cfg` at call time, so a change in the UI applies to the next
   // call without touching either of them.
-  const SETTINGS_KEYS = [
-    'blockShellHttp',
-    'blockLocalHttp',
-    'shellHttpBlock',
-    'warnAt',
-    'summarizeAt',
-    'failWarnAt',
-    'failLimit',
-  ]
-  registerSettings(
-    ctx,
-    cfg,
-    Object.fromEntries(SETTINGS_KEYS.map((key) => [key, cfg[key]])),
-    (resolved) => {
-      for (const key of SETTINGS_KEYS) {
-        if (resolved?.[key] !== undefined) cfg[key] = resolved[key]
-      }
-    },
-  )
-
   // `web_fetch_file` is registered only when the profile actually has the web
   // service. It is the replacement a denial points at, so the guard must know
   // whether it exists -- naming a tool a profile does not have is worse than
@@ -438,6 +506,7 @@ export function apply(ctx, config = {}) {
   // downstream block's decision is preserved and the context composes with it
   // instead of replacing it.
   const onPost = ctx.on('tools/post-execute', async (exec, result, next) => {
+    refresh()
     const { name, agent } = parts(exec)
     let failureAdvisory
     if (agent !== null && tracked(name)) {
@@ -502,6 +571,7 @@ export function apply(ctx, config = {}) {
   // refusals. Plugin notices and tool results do not, so the breaker's own
   // messages never reset the budget they are trying to enforce.
   const onPreStep = ctx.on('agent/pre-step', (input, next) => {
+    refresh()
     const agent = input?.agent ?? null
     if (agent !== null && hasUserMessage(input?.messages)) tracker.reset(agent)
     return next()
@@ -519,6 +589,22 @@ export function apply(ctx, config = {}) {
   }
 }
 
-export { fetchFileToolState, isTracked, settingsState }
+export { fetchFileToolState, isTracked }
 
-export default { name, inject, apply }
+/**
+ * The object the loader hands to cordis — and therefore the ONLY place the platform looks
+ * for the settings schema.
+ *
+ * `Config` must be on this object, not merely exported by the module. The loader normalizes
+ * a module's exports to ONE plugin object (`unwrapExports`: `exports.default ?? exports`),
+ * and cordis copies the schema off that object (`runtime = { …, Config: plugin.Config }`),
+ * caching the runtime per apply-callback. With a default export that omitted `Config`, the
+ * runtime was built with `Config: undefined`: the plugin ran perfectly, but the settings
+ * service found no schema for the entry, never served `repeat-tool-breaker` as a namespace,
+ * and the browser card — gated on `configForms.whileServed` — never mounted. Measured on
+ * dsh 0.1.7: `runtimeKeys=["name","callback","fibers","Config"] runtimeHasConfig=false`
+ * while the module's own schema was valid (`localConfigHasToJSON=true`).
+ *
+ * The named exports above are kept: tests and the documented module face import them.
+ */
+export default { name, inject, apply, Config }

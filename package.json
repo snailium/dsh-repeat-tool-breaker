@@ -1,6 +1,6 @@
 {
   "name": "dsh-repeat-tool-breaker",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Escalating repeat detection for dsh: a synchronous ctx.tools.guard gate that counts semantic fingerprints (exact/cmd/net/host/sink) over a per-agent sliding window, warns at 7, demands a progress summary at 11, and gates at 12 (16 for the coarser host: measure), plus a second track on consecutive failures (advisory at 3, block at 5) \u2014 asking the operator for a turn-scoped exemption instead of only blocking. Also refuses shell HTTP and redirects the model to a web_fetch_file tool that saves the page and returns its path, and ships a Settings \u2192 Plugins card for the block policy and the stage thresholds.",
   "keywords": [
     "dsh",
@@ -37,9 +37,8 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-renderer",
-        "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-ui-settings-plugins"
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-settings"
       ],
       "platform": "web"
     },
@@ -64,6 +63,6 @@
     "url": "https://github.com/snailium/dsh-repeat-tool-breaker/issues"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/schemastery": "^3.18.4"
   }
 }

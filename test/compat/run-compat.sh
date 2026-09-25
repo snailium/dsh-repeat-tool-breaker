@@ -45,7 +45,9 @@ MOCK_PORT=${MOCK_PORT:-18999}
 PLUGIN_SPEC=${PLUGIN_SPEC:-$PLUGIN_DIR}
 ENDPOINT="http://127.0.0.1:${MOCK_PORT}/v1"
 
-LOG=$(mktemp -d)/compat.log
+# Stable path on purpose: a `mktemp -d` log is gone by the time anyone asks why a
+# scenario failed, and "the mock died mid-run" is the one failure this file explains.
+LOG=${COMPAT_LOG:-$DSH_PREFIX/compat-mock.log}
 MOCK_PID=''
 
 cleanup() { [[ -n "$MOCK_PID" ]] && kill "$MOCK_PID" 2>/dev/null || true; }
@@ -73,7 +75,8 @@ run_scenario() {
   rm -rf "$COMPAT_HOME/sessions"
   DSH_HOME="$COMPAT_HOME" MOCK_API_KEY=mock timeout 600 "$DSH_BIN" --profile probe "compat check" 2>&1 | tail -3
   COMPAT_HOME="$COMPAT_HOME" EXPECT_EXECUTED="$expected_executed" EXPECT_TOTAL="$expected_total" \
-    LABEL="$label" EXPECT_ADVISORY="${EXPECT_ADVISORY:-}" EXPECT_DENIAL="${EXPECT_DENIAL:-}" python3 - <<'PY'
+    LABEL="$label" EXPECT_ADVISORY="${EXPECT_ADVISORY:-}" EXPECT_DENIAL="${EXPECT_DENIAL:-}" \
+    MOCK_LOG="$LOG" python3 - <<'PY'
 import glob, json, os, subprocess, sys
 
 home = os.environ['COMPAT_HOME']
@@ -96,17 +99,34 @@ for path in files:
             continue
         if event.get('type') != 'tool/result':
             continue
-        for block in event['data']['message'].get('content', []):
-            if block.get('type') == 'tool-result':
+        message = event['data']['message']
+        # The payload shape MOVED in session format 4 (dsh 0.1.7):
+        #   v3  message.content[] -> {type:'tool-result', isError, content:[{type:'text'}]}
+        #   v4  the message IS the result: {role:'tool', toolCallId, isError, content:[{type:'text'}]}
+        # Accepting only the nested shape silently yielded ZERO results on 0.1.7 while the
+        # run itself was fine, and the failure then read as if the plugin had hung.
+        blocks = [b for b in message.get('content', []) if b.get('type') == 'tool-result']
+        if blocks:
+            for block in blocks:
                 text = '\n'.join(x.get('text', '') for x in block.get('content', []) if isinstance(x, dict))
                 results.append((bool(block.get('isError')), text))
+        elif message.get('role') == 'tool':
+            text = '\n'.join(x.get('text', '') for x in message.get('content', []) if isinstance(x, dict))
+            results.append((bool(message.get('isError')), text))
 
 for i, (is_error, text) in enumerate(results, start=1):
     print(f'  attempt {i}: isError={is_error} | {text.splitlines()[0][:90]}')
 
 if len(results) != expected_total:
-    sys.exit(f'FAIL: expected {expected_total} tool results, saw {len(results)} '
-             '(a missing result means the run hung or died)')
+    mock_log = os.environ.get('MOCK_LOG', '')
+    provider_failures = whole_log.count('"TRANSPORT"') + whole_log.count('"kind":"error"')
+    if provider_failures:
+        why = (f'{provider_failures} provider failure(s) are recorded in the session, so no tool '
+               f'call could ever happen: the model endpoint was unreachable, not the plugin. '
+               f'Mock log: {mock_log}')
+    else:
+        why = f'no provider failure was recorded, so the run died before issuing calls. Mock log: {mock_log}'
+    sys.exit(f'FAIL: expected {expected_total} tool results, saw {len(results)}.\n  {why}')
 executed = [r for r in results if not r[0]]
 denied = [r for r in results if r[0]]
 if len(executed) != expected_executed:

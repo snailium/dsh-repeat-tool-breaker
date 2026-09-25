@@ -290,54 +290,32 @@ function fakeSettingsService({ base }) {
   }
 }
 
-test('F14: the settings box registers, and a change applies live', async () => {
-  const { SETTINGS_NAMESPACE, buildSettingsSchema, registerSettings, settingsState } = await import(
-    '../lib/settings.js'
+test('F14: the exported Config IS the settings schema, and every field is volatile', async () => {
+  // dsh 0.1.7 removed `ctx.settings.register`: `SettingsForms.schema()` reads the plugin's
+  // exported `Config`, and `volatileForm()` keeps only fields marked `volatile()` — an
+  // entry with no such field is SKIPPED, so a schema without volatile is a schema with no
+  // form at all. Both halves are asserted here because either one silently removes the
+  // settings page.
+  const { Config } = await import('../index.js')
+  const fields = Object.keys(Config.dict ?? {})
+  assert.deepEqual(
+    [...fields].sort(),
+    ['blockLocalHttp', 'blockShellHttp', 'failLimit', 'failWarnAt', 'shellHttpBlock', 'summarizeAt', 'warnAt'],
   )
-  const { default: z } = await import('@deepseek-ai/schemastery')
-  const cfg = { ...FETCH_FILE_DEFAULTS, blockShellHttp: true, blockLocalHttp: false, shellHttpBlock: ['curl', 'wget'] }
-  const schema = buildSettingsSchema(z, cfg)
-
-  // The defaults come from cfg, so the box and lib/defaults.js cannot drift.
-  const defaults = schema({})
-  assert.equal(defaults.blockShellHttp, true)
-  assert.deepEqual(defaults.shellHttpBlock, ['curl', 'wget'])
-
-  const double = fakeSettingsService({ base: {} })
-  const seen = []
-  const ctx = {
-    inject: (deps, cb) => {
-      assert.deepEqual(deps, ['settings'])
-      cb({ settings: double.service })
-      return () => {}
-    },
+  for (const field of fields) {
+    assert.equal(Config.dict[field].meta?.volatile, true, `${field} must be volatile or the form skips it`)
   }
-  registerSettings(ctx, cfg, { shellHttpBlock: ['curl', 'wget'] }, (value) => seen.push(value))
-  await new Promise((resolve) => setTimeout(resolve, 60))
 
-  assert.equal(settingsState.registered, true, `registration failed: ${settingsState.reason}`)
-  assert.equal(double.service.__ns, SETTINGS_NAMESPACE, 'namespace must be lowercase-hyphenated')
-  assert.equal(typeof double.service.__schema, 'function', 'dsh-settings CALLS the schema to resolve')
-  assert.equal(seen.length, 1, 'the resolved value is delivered once at registration')
-
-  // A change in the box re-delivers, which is what makes the value live.
-  double.set({ ...defaults, shellHttpBlock: ['curl', 'wget', 'aria2c'] })
-  assert.equal(seen.length, 2)
-  assert.deepEqual(seen[1].shellHttpBlock, ['curl', 'wget', 'aria2c'])
-})
-
-test('F15: no settings provider is a soft failure, not a silent one', async () => {
-  const { registerSettings, settingsState } = await import('../lib/settings.js')
-  settingsState.registered = false
-  settingsState.reason = ''
-  // A context whose `inject` never fires: the plugin keeps working from its patch
-  // config, and the state records WHY there is no box rather than leaving a mystery.
-  registerSettings({ inject: () => () => {} }, {}, {}, () => {})
-  assert.equal(settingsState.registered, false)
-  // And a context with no scoped inject at all is also tolerated.
-  settingsState.reason = ''
-  registerSettings({ get: () => undefined }, {}, {}, () => {})
-  assert.match(settingsState.reason, /no scoped inject/)
+  // The documented off-switches must accept `null` rather than failing the load.
+  //
+  // Measured, and it contradicts what this test first asserted: `.volatile()` RELAXES type
+  // checking at resolve time — a live reference is not a value — so a `null` reaches
+  // `apply` even on a plain `z.number()` field, and an assertion that `warnAt: null` throws
+  // was simply wrong. The explicit union is kept for the INTENT the rendered form reads,
+  // and `plainConfig` normalises an unset nullable field to `null`, so the documented
+  // off-switch behaves identically whether it was set explicitly or left to its default.
+  assert.doesNotThrow(() => Config({ summarizeAt: null, failLimit: null }))
+  assert.doesNotThrow(() => Config({ warnAt: null }))
 })
 
 test('F16: the published package still ships its entry point', async () => {
@@ -367,7 +345,7 @@ test('F17: the published package still ships its browser half', async () => {
   assert.ok(manifest.dsh.client, '`dsh.client` declares the browser half and must exist')
   assert.equal(manifest.dsh.client.platform, 'web')
   assert.ok(Array.isArray(manifest.dsh.client.inject), '`dsh.client.inject` must be an array')
-  for (const dependency of ['@deepseek-ai/dsh-client-ui-settings', '@deepseek-ai/dsh-client-ui-settings-plugins']) {
+  for (const dependency of ['@deepseek-ai/dsh-client-ui-settings', '@deepseek-ai/dsh-client-ui-plugin-manager']) {
     assert.ok(
       manifest.dsh.client.inject.includes(dependency),
       `the card needs ${dependency} loaded first (got ${JSON.stringify(manifest.dsh.client.inject)})`,
@@ -386,7 +364,13 @@ test('F17: the published package still ships its browser half', async () => {
     source.includes(`id: '${manifest.name}'`),
     `the bundle must register under the package name ${manifest.name}`,
   )
-  // react is the only module-table dependency; every service arrives by injection.
+  // react plus the shared settings primitives are the module-table dependencies; every
+  // SERVICE arrives by injection. The primitives are what supply the form chrome, so the
+  // bundle does not re-implement (and mis-style) the card.
   const required = [...source.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((match) => match[1])
-  assert.deepEqual(required, ['react'], 'only react may be required from the client module table')
+  assert.deepEqual(
+    [...required].sort(),
+    ['@deepseek-ai/dsh-client-ui-primitives', 'react'],
+    'the module table surface must stay at react and the shared form components',
+  )
 })

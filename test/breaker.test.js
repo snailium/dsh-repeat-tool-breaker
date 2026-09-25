@@ -36,7 +36,7 @@ import {
 } from '../lib/fetch-file.js'
 import { createTracker, hasUserMessage } from '../lib/window.js'
 import { askMessage, denyMessage, renderResult, summarizeMessage, warnMessage } from '../lib/message.js'
-import { apply, name as PLUGIN_NAME } from '../index.js'
+import { apply, name as PLUGIN_NAME, SOURCE_KIND } from '../index.js'
 
 const cfg = validateCfg(mergeDefaults({}))
 const A = { id: 'agent-A' }
@@ -506,7 +506,7 @@ test('T12b: a human turn clears the window, a plugin notice does not', async () 
 
   const preStep = handlers.get('agent/pre-step')
   const noop = () => undefined
-  await preStep({ agent: A, messages: [{ source: { kind: 'plugin', plugin: 'repeat-tool-breaker' } }] }, noop)
+  await preStep({ agent: A, messages: [{ source: { kind: SOURCE_KIND } }] }, noop)
   assert.equal(typeof guards[0](call), 'string', 'a plugin notice must NOT reset the budget')
 
   await preStep({ agent: A, messages: [{ source: { kind: 'user' } }] }, noop)
@@ -546,7 +546,7 @@ test('T13b: renderResult concatenates text blocks only', () => {
 
 test('T13c: hasUserMessage only trusts the human source', () => {
   assert.equal(hasUserMessage([{ source: { kind: 'user' } }]), true)
-  assert.equal(hasUserMessage([{ source: { kind: 'plugin' } }, { source: { kind: 'model' } }]), false)
+  assert.equal(hasUserMessage([{ source: { kind: SOURCE_KIND } }, { source: { kind: 'model' } }]), false, 'a plugin notice is not a human turn, whatever the producer kind is called')
   assert.equal(hasUserMessage([]), false)
   assert.equal(hasUserMessage(undefined), false)
 })
@@ -763,7 +763,7 @@ test('T24: the three stages fire at warnAt, summarizeAt and the cap', async () =
     const denial = guards[0](exec)
     const decision = await post(exec, { content: [{ type: 'text', text: 'ok' }] }, noop)
     const advisory = (decision?.additionalContexts ?? [])
-      .filter((message) => message.source?.kind === 'plugin')
+      .filter((message) => message.source?.kind === SOURCE_KIND)
       .map((message) => message.content[0].text)
       .join('\n')
     observed.push({ i, denied: typeof denial === 'string', denial, advisory })
@@ -1010,7 +1010,7 @@ async function drive(guards, post, exec, res, noop) {
   const denial = guards[0](exec)
   const decision = await post(exec, res, noop)
   const advisory = (decision?.additionalContexts ?? [])
-    .filter((message) => message.source?.kind === 'plugin')
+    .filter((message) => message.source?.kind === SOURCE_KIND)
     .map((message) => message.content[0].text)
     .join('\n')
   return { denial, advisory }

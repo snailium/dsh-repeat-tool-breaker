@@ -271,10 +271,16 @@ permanently nonexistent host — 8 times in a row.
 ## Requirements
 
 - Node.js **>= 20** (developed and tested on 22).
-- A DSH profile that exposes the `tools` service. Built and verified against
-  **`@deepseek-ai/dsh` 0.1.2-rc.1**.
-- No runtime dependencies — the plugin imports only its own `lib/` modules (no
-  `cordis`, no schemastery), so it can be mounted straight from a path.
+- **dsh >= 0.1.7 (session format 4).** This is the 0.1.7 line. 0.1.7 removed the imperative
+  settings API and **rejects** the message-source shape that 0.1.5 **requires**, so one build
+  cannot serve both: **use 0.7.x on dsh 0.1.5**, and this release from 0.1.7 onward.
+- A DSH profile that exposes the `tools` service. The settings page additionally needs the
+  **web** surface and a profile that mounts `@deepseek-ai/dsh-client-ui-plugin-manager`.
+- One runtime dependency: **`@deepseek-ai/schemastery` (^3.18.4)** — the exported `Config`
+  schema is built with it, and 0.1.7 renders the settings form from that schema (which is why
+  `.volatile()` is required and why 3.18.2 is too old). The browser half additionally requires
+  `react` and `@deepseek-ai/dsh-client-ui-primitives`, both **client module-table seeds** the
+  platform provides rather than dependencies of this package.
 
 ## Install
 
@@ -555,13 +561,16 @@ an implementation detail. The Plugins page renders the *intersection* of two led
 
 | Half | What it contributes | Where |
 |---|---|---|
-| Host | the settings namespace and its schema | `ctx.settings.register` in `lib/settings.js` |
+| Host | the settings namespace and its schema | the exported `Config`, read from `entry.fiber.runtime.Config` |
 | Browser | a card claiming `settings.plugin.item` under the SAME key | `ctx.slots.register` in `lib/client.js` |
 
-`dsh-client-ui-settings-plugins` hard-codes its own four cards (Shell, Agent loop,
-Subagent, Web search), so a third-party plugin must bring its own. An exported
-`Config` — or `ctx.settings.register` alone — is **not** a card: register a namespace
-with no browser bundle claiming it and nothing renders, with no error anywhere.
+the platform hard-codes its own official cards, so a third-party plugin must bring its own.
+Since **dsh 0.1.7** the namespace is the **loader entry id** and the schema comes from the
+plugin's exported `Config` — `ctx.settings.register` no longer exists, and a `Config` that is
+not on the module's **default export** is invisible to the settings service. A card likewise
+needs `volatile()` fields, or the entry is skipped and nothing renders, with no error anywhere.
+See the workspace skill `dsh-plugin-settings-card` for the full contract and its failure
+signatures.
 
 The bundle is hand-written plain JS rather than a TypeScript build. A client bundle is
 just a lazy-CJS factory behind `window.__ModuleLoader__.load`, and its only module-table

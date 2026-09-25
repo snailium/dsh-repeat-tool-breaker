@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 
 import { DEFAULTS, mergeDefaults, validateCfg } from '../lib/defaults.js'
-import { SETTINGS_NAMESPACE, buildSettingsSchema } from '../lib/settings.js'
+import { Config, name as PLUGIN_NAME } from '../index.js'
 
 const CLIENT_SOURCE = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 
@@ -53,14 +53,23 @@ function loadBundle(options = {}) {
   }
   assert.equal(typeof registration.factory, 'function', 'the bundle must register a factory')
 
-  const allowed = options.allowed ?? ['react']
+  const allowed = options.allowed ?? ['react', '@deepseek-ai/dsh-client-ui-primitives']
   const react = options.react ?? stubReact()
+  // The shared settings components are a CLIENT MODULE TABLE SEED, like react: the bundle
+  // requires them instead of re-implementing the form chrome, which 0.1.7 supplies.
+  const modules = {
+    react,
+    '@deepseek-ai/dsh-client-ui-primitives': {
+      SettingsForm: 'SettingsForm',
+      SettingsValueField: 'SettingsValueField',
+    },
+  }
   const face = registration.factory((specifier) => {
     required.push(specifier)
     if (!allowed.includes(specifier)) {
       throw new Error(`client bundle required an unexpected specifier: ${specifier}`)
     }
-    return react
+    return modules[specifier] ?? react
   })
   return { face, registration, required }
 }
@@ -85,10 +94,11 @@ function stubReact() {
  * @returns the scope plus the calls it received.
  */
 function fakeScope(options = {}) {
-  const calls = { set: [], unset: [], subscribed: 0 }
+  const calls = { ops: [], mutate: [], subscribed: 0 }
   let snapshot = {
     status: options.status ?? 'ready',
     writable: options.writable ?? true,
+    revision: 0,
     value: options.value ?? { ...DEFAULTS },
     base: options.base ?? { ...DEFAULTS },
     user: options.user ?? {},
@@ -96,15 +106,32 @@ function fakeScope(options = {}) {
   return {
     calls,
     snapshot: () => snapshot,
-    set: async (field, value) => {
-      calls.set.push([field, value])
+    set_UNUSED: async (field, value) => {
       snapshot = { ...snapshot, user: { ...snapshot.user, [field]: value }, value: { ...snapshot.value, [field]: value } }
     },
-    unset: async (field) => {
-      calls.unset.push(field)
+    unset_UNUSED: async (field) => {
       const user = { ...snapshot.user }
       delete user[field]
       snapshot = { ...snapshot, user, value: { ...snapshot.value, [field]: snapshot.base[field] } }
+    },
+    async mutate(ops, revision) {
+      calls.mutate.push({ ops, revision })
+      for (const op of ops) calls.ops.push(op)
+      for (const op of ops) {
+        const field = Array.isArray(op.path) ? op.path[0] : op.path
+        if (op.op === 'unset') {
+          const user = { ...snapshot.user }
+          delete user[field]
+          snapshot = { ...snapshot, user, value: { ...snapshot.value, [field]: snapshot.base[field] } }
+        } else {
+          snapshot = {
+            ...snapshot,
+            user: { ...snapshot.user, [field]: op.value },
+            value: { ...snapshot.value, [field]: op.value },
+          }
+        }
+      }
+      return true
     },
     subscribe: () => {
       calls.subscribed += 1
@@ -117,7 +144,7 @@ function fakeScope(options = {}) {
 /**
  * A client context that captures what `apply` claimed.
  *
- * @param scope - the scope `settingsScope.bind` should answer.
+ * @param scope - the shared form `configForms.get` should answer.
  * @returns the context plus the captured registrations and effects.
  */
 function fakeClientCtx(scope) {
@@ -127,9 +154,15 @@ function fakeClientCtx(scope) {
       captured.effects.push(label)
       return fn()
     },
-    locale: { register() {} },
-    settingsScope: {
-      bind({ namespace }) {
+    locale: {
+      bind: () => (key) => key,
+      register() {},
+    },
+    configForms: {
+      whileServed(namespaces, callback) {
+        return callback(new Set(namespaces))
+      },
+      get(namespace) {
         captured.bound = namespace
         return scope
       },
@@ -159,17 +192,21 @@ test('C2: the module face is what the client module system requires', async () =
   assert.equal(face.name, 'repeat-tool-breaker-client')
   assert.equal(typeof face.apply, 'function')
   assert.ok(Array.isArray(face.inject), 'inject must be an array of client services')
-  assert.deepEqual([...face.inject].sort(), ['locale', 'settingsScope', 'slots'])
+  assert.deepEqual([...face.inject].sort(), ['configForms', 'locale', 'slots'])
 })
 
-test('C3: react is the ONLY module the bundle requires', async () => {
+test('C3: the bundle requires only react and the shared settings primitives', async () => {
   const { face, required } = loadBundle()
   const scope = fakeScope()
   const { ctx } = fakeClientCtx(scope)
   face.apply(ctx)
   // `required` is populated by the factory's own require calls, and any specifier outside
   // the allow list would already have thrown inside the factory.
-  assert.deepEqual(required, ['react'], 'the module table surface must stay at react and nothing else')
+  assert.deepEqual(
+    [...required].sort(),
+    ['@deepseek-ai/dsh-client-ui-primitives', 'react'],
+    'the module table surface is react plus the shared form components, and nothing else',
+  )
 })
 
 test('C4: the claimed slot key is the namespace the Host registers', async () => {
@@ -177,23 +214,23 @@ test('C4: the claimed slot key is the namespace the Host registers', async () =>
   const scope = fakeScope()
   const { ctx, captured } = fakeClientCtx(scope)
   face.apply(ctx)
-  assert.deepEqual(captured.slotInjects, ['settings.plugin.item'])
+  assert.deepEqual(captured.slotInjects, ['plugins.item'])
   assert.equal(captured.registrations.length, 1)
-  assert.equal(captured.registrations[0].options.name, 'settings.plugin.item')
-  assert.equal(
-    captured.registrations[0].options.key,
-    SETTINGS_NAMESPACE,
-    'a slot key that does not match the Host namespace renders nothing',
-  )
-  assert.equal(captured.bound, SETTINGS_NAMESPACE)
+  assert.equal(captured.registrations[0].options.name, 'plugins.item')
+  // Since dsh 0.1.7 the served namespace is the loader ENTRY ID, which this project keeps
+  // equal to the cordis plugin name. A card key that does not match renders nothing.
+  assert.equal(captured.registrations[0].options.id, PLUGIN_NAME, 'the slot id must be the loader entry id the Host serves')
+  assert.equal(typeof captured.registrations[0].options.label, 'function')
+  assert.equal(captured.bound, PLUGIN_NAME)
   assert.equal(typeof captured.registrations[0].component, 'function')
 })
 
 test('C5: the card edits exactly the fields the Host schema declares, and no others', async () => {
   const { face } = await loadBundle()
-  const z = (await import('@deepseek-ai/schemastery')).default
-  const cfg = validateCfg(mergeDefaults({}))
-  const declared = Object.keys(buildSettingsSchema(z, cfg).dict ?? {})
+  // 0.1.7 derives the settings FORM from the plugin's exported `Config`
+  // (`SettingsForms.schema()` reads `entry.fiber.runtime.Config`), so that is what the
+  // card must agree with — not a separately registered namespace schema.
+  const declared = Object.keys(Config.dict ?? {})
   const edited = face.FIELD_LAYOUT.map((entry) => entry.field)
   assert.deepEqual(
     [...declared].sort(),
@@ -235,16 +272,18 @@ test('C7: an edit is staged, and only a save writes it', async () => {
   face.apply(ctx)
   const props = captured.registrations[0].options.inject()
   const store = props.hooks.repeatToolBreaker
-  assert.deepEqual(scope.calls.set, [], 'apply itself must write nothing')
+  assert.deepEqual(scope.calls.ops, [], 'apply itself must write nothing')
 
   props.edit('warnAt', '9')
   assert.equal(store.getSnapshot().fields.warnAt.text, '9')
   assert.equal(store.getSnapshot().dirty, true)
-  assert.deepEqual(scope.calls.set, [], 'staged text must not reach the Host before Save')
+  assert.deepEqual(scope.calls.ops, [], 'staged text must not reach the Host before Save')
 
   props.save()
   await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.deepEqual(scope.calls.set, [['warnAt', 9]])
+  assert.deepEqual(scope.calls.ops, [{ op: 'set', path: ['warnAt'], value: 9 }])
+  assert.equal(scope.calls.mutate.length, 1, 'one save is ONE fenced mutation, not one write per field')
+  assert.equal(scope.calls.mutate[0].revision, 0, 'the draft is fenced by the revision it was read at')
   assert.equal(store.getSnapshot().dirty, false, 'a landed save clears the drafts')
   assert.equal(store.getSnapshot().failed, false)
 })
@@ -262,7 +301,7 @@ test('C8: an invalid draft blocks the save instead of being dropped', async () =
   assert.equal(store.getSnapshot().invalid, true)
   props.save()
   await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.equal(scope.calls.set.length, 0, 'the save refuses rather than writing part of the plan')
+  assert.equal(scope.calls.ops.length, 0, 'the save refuses rather than writing part of the plan')
   assert.equal(store.getSnapshot().fields.warnAt.text, 'seven', 'the draft survives for correction')
 })
 
@@ -279,7 +318,7 @@ test('C9: discard drops the drafts and leaves the Host untouched', async () => {
   props.discard()
   assert.equal(store.getSnapshot().dirty, false)
   assert.equal(store.getSnapshot().fields.failLimit.text, String(DEFAULTS.failLimit))
-  assert.deepEqual(scope.calls.set, [])
+  assert.deepEqual(scope.calls.ops, [])
 })
 
 test('C10: reset stages a clear so the field re-inherits the composition layer', async () => {
@@ -295,7 +334,7 @@ test('C10: reset stages a clear so the field re-inherits the composition layer',
   assert.equal(store.getSnapshot().fields.warnAt.text, String(DEFAULTS.warnAt), 'reset shows the composed default')
   props.save()
   await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.deepEqual(scope.calls.unset, ['warnAt'], 'reset clears the user-layer entry rather than writing the default')
+  assert.deepEqual(scope.calls.ops, [{ op: 'unset', path: ['warnAt'] }], 'reset clears the user-layer entry rather than writing the default')
 })
 
 test('C11: a comma list is normalized, so the control can be typed loosely', async () => {
@@ -309,7 +348,7 @@ test('C11: a comma list is normalized, so the control can be typed loosely', asy
   props.edit('shellHttpBlock', ' curl , wget ,curl,  ')
   props.save()
   await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.deepEqual(scope.calls.set, [['shellHttpBlock', ['curl', 'wget']]])
+  assert.deepEqual(scope.calls.ops, [{ op: 'set', path: ['shellHttpBlock'], value: ['curl', 'wget'] }])
 })
 
 test('C12: a boolean field renders the literal the settings document uses', async () => {
@@ -324,10 +363,10 @@ test('C12: a boolean field renders the literal the settings document uses', asyn
   props.edit('blockShellHttp', 'false')
   props.save()
   await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.deepEqual(scope.calls.set, [['blockShellHttp', false]])
+  assert.deepEqual(scope.calls.ops, [{ op: 'set', path: ['blockShellHttp'], value: false }])
 })
 
-test('C13: the card renders nothing until the Host serves the namespace', async () => {
+test('C13: an unserved namespace still renders, and the shared chrome says so', async () => {
   const { face } = await loadBundle()
   const scope = fakeScope({ status: 'loading' })
   const { ctx, captured } = fakeClientCtx(scope)
@@ -338,6 +377,7 @@ test('C13: the card renders nothing until the Host serves the namespace', async 
 
   assert.equal(store.getSnapshot().available, false)
   const rendered = captured.registrations[0].component({
+    view: 'form',
     t: (key) => key,
     useRepeatToolBreaker: (selector) => selector(store.getSnapshot()),
     edit() {},
@@ -345,7 +385,10 @@ test('C13: the card renders nothing until the Host serves the namespace', async 
     save() {},
     discard() {},
   })
-  assert.equal(rendered, null, 'an unserved namespace must leave no trace in the list')
+  // The card no longer decides this: `SettingsForm` renders the `unavailable` copy, and the
+  // platform's own gate (`whileServed`) is what keeps a card off the page entirely.
+  assert.equal(rendered.type, 'SettingsForm')
+  assert.equal(rendered.props.state.available, false)
 })
 
 test('C14: a served namespace renders the card, collapsed, with the save disabled', async () => {
@@ -357,6 +400,7 @@ test('C14: a served namespace renders the card, collapsed, with the save disable
   const store = props.hooks.repeatToolBreaker
 
   const rendered = captured.registrations[0].component({
+    view: 'form',
     t: (key) => key,
     useRepeatToolBreaker: (selector) => selector(store.getSnapshot()),
     edit() {},
@@ -364,15 +408,29 @@ test('C14: a served namespace renders the card, collapsed, with the save disable
     save() {},
     discard() {},
   })
-  assert.ok(rendered, 'a served namespace renders the card')
-  assert.equal(rendered.type, 'li')
-  assert.equal(rendered.props.className, 'rtb_card', 'a fresh card starts collapsed')
+  assert.equal(rendered.type, 'SettingsForm', 'the page supplies the frame; this supplies the form')
+  assert.equal(rendered.children.length, 7, 'one field per declared setting, in render order')
+  assert.equal(rendered.children[0].type, 'SettingsValueField')
+  assert.equal(rendered.props.state.available, true)
+
+  // The summary view is what the LIST renders as the row description; without it the page
+  // falls back to the package description, which is not the card's copy.
+  const summary = captured.registrations[0].component({
+    view: 'summary',
+    t: (key) => key,
+    useRepeatToolBreaker: (selector) => selector(store.getSnapshot()),
+    edit() {},
+    resetField() {},
+    save() {},
+    discard() {},
+  })
+  assert.equal(summary, 'description')
 })
 
 test('C15: a failing write keeps the draft and reports the failure', async () => {
   const { face } = await loadBundle()
   const scope = fakeScope()
-  scope.set = async () => {
+  scope.mutate = async () => {
     throw new Error('host refused')
   }
   const { ctx, captured } = fakeClientCtx(scope)

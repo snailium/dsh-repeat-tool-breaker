@@ -3,6 +3,72 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-09-25
+
+**BREAKING: this release targets dsh 0.1.7 (session format 4) only.** 0.1.7 removed the
+imperative settings API and changed the message-source shape, and the two source shapes are
+**mutually exclusive** — one of them throws on each host — so the generations are served by
+two lines: **0.8.x for dsh >= 0.1.7**, **0.7.x for dsh 0.1.5**. No configuration key changed;
+`shellHttpBlock` and the rest keep their names and semantics.
+
+### Changed — the settings page, rebuilt for 0.1.7
+
+- **The exported `Config` IS the settings schema now, and it must ride the DEFAULT EXPORT.**
+  0.1.7 deleted `ctx.settings.register`: `SettingsForms.schema(entry)` reads
+  `entry.fiber.runtime.Config`, and the namespace is the **loader entry id**. The loader
+  normalizes a module's exports to ONE object (`unwrapExports`: `exports.default ?? exports`)
+  and cordis copies the schema off that object, caching the runtime per callback — so a module
+  whose default export omitted `Config` ran perfectly while its settings page never appeared.
+  Measured: `runtimeKeys=["name","callback","fibers","Config"] runtimeHasConfig=false` against
+  `localConfigHasToJSON=true`.
+- **Every settings field is `.volatile()`.** `volatileForm()` keeps only volatile fields and
+  `describe()` drops an entry whose form is empty, so a schema without them has no form at all.
+  The fields are delivered as **live handles** and are read with `.get()`; the config is
+  refreshed in place before every hook, so an edit takes effect without a remount. A documented
+  `null` off-switch needs `z.union([z.number(), z.const(null)])`, and an **unset** volatile
+  union resolves to `undefined` rather than `null`, which is normalized so the off-switch
+  behaves the same whether it was set or defaulted.
+- **The card is built from the platform's own components.** It registers into the 0.1.7 slot
+  **`plugins.item`** (`{ name, id, order, label, locale, inject }`) behind
+  `ctx.configForms.whileServed([entryId])`, injects `['slots', 'locale', 'configForms']`, and
+  renders `SettingsForm` + `SettingsValueField` from `@deepseek-ai/dsh-client-ui-primitives`.
+  It previously rendered its own card frame, which in 0.1.7 doubled the chrome, mis-styled it,
+  and put a header button over the platform's that swallowed clicks.
+- **`view === 'summary'` is implemented.** The page renders a card's summary as the row's
+  description; without it the list falls back to this package's npm description.
+- `@deepseek-ai/schemastery` is now `^3.18.4` — `.volatile()` does not exist in 3.18.2 — and
+  `dsh.client.inject` names the 0.1.7 packages (`-client-locale`, `-ui-settings`,
+  `-ui-plugin-manager`).
+- **The message `source.kind` is `plugin:dsh-repeat-tool-breaker`.** Session format 4 rejects
+  the retired `{ kind: 'plugin' }` wrapper that format 3 *requires*.
+
+### Changed — the compatibility harness
+
+- **It reads both session-format payload shapes.** Format 4 flattened `tool/result` (the
+  message IS the result) where format 3 nested it (`content[] -> type: 'tool-result'`); the
+  old parser silently found ZERO results on 0.1.7 and reported it as "the run hung or died".
+- The mock model's log is kept at a stable path instead of a `mktemp -d` that is gone by the
+  time anyone asks why a scenario failed, and a result-count mismatch now **names the cause**
+  (provider failures recorded in the session vs. a run that died early) instead of guessing.
+
+### Added
+
+- **T54**, the failure gate's pivot contract, measured with `web_fetch_file` and 404 results:
+  after five consecutive failures the failing endpoint and another path on the **same host**
+  stay blocked, while a different website, a different subdomain of the same registrable
+  domain, and unrelated tools are all allowed — and a `200` clears the streak. It also
+  records that `site:` does not participate in the failure track, which is what lets a
+  subdomain through.
+
+### Notes
+
+- **Card artwork is not available to a third-party plugin.** The Plugins page looks the icon
+  up in a map hard-coded in the official plugin-manager bundle, and the `plugins.item` slot
+  schema has no icon option, so this card shows the platform's default artwork. Written down
+  here so it is not mistaken for a defect.
+- `socat` remains deliberately absent from `shellHttpBlock`: the coverage scan's only misses
+  are `socat -V`, `socat -h` and a local relay, none of which fetch anything.
+
 ## [0.7.0] - 2026-09-24
 
 **BREAKING: the block is a BLACKLIST, and the setting is the list itself.** `shellHttpAllow`
@@ -907,7 +973,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.0...v0.6.1
