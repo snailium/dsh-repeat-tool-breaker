@@ -25,6 +25,10 @@ on:
         description: 'Print the OIDC token claims npm matches against (no publish)'
         type: boolean
         default: false
+      tag:
+        description: 'npm dist-tag. Use a NON-latest tag for a release line that is incompatible with the current latest — `latest` would hand a fresh install a build its dsh cannot run.'
+        type: string
+        default: 'latest'
 
 permissions:
   contents: read
@@ -104,7 +108,10 @@ jobs:
 
       - name: Publish
         if: ${{ !inputs.dry-run }}
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance --tag "${{ inputs.tag }}"
+        # `--tag latest` is spelled out rather than implied: a release whose compatibility
+        # line moved must be published under its own tag, and typing it makes that visible
+        # in the run log.
 
       - name: Dry run
         if: ${{ inputs.dry-run }}
