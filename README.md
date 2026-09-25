@@ -5,7 +5,19 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 
-Escalating repeat detection for an agent's tool calls. A local, dependency-free
+> ### ⚠️ This line requires **dsh >= 0.1.7** (session format 4)
+>
+> **0.8.x is the dsh 0.1.7 line. On dsh 0.1.5, install `dsh-repeat-tool-breaker@0.7`.**
+> 0.1.7 replaced the settings API, so one build cannot register a settings page on both
+> generations — the two are served by two lines rather than by a version probe.
+>
+> On dsh 0.1.5, **0.8.x still detects repeats, still blocks shell HTTP and still delivers its
+> advisories** (verified on 0.1.5-rc.2: the advisory persists with this release's message
+> source). The one thing that is lost is the **settings page**, because the Host no longer
+> registers a namespace there and the card needs 0.1.7's client services. Use `@0.7` on
+> 0.1.5 if you want the settings UI.
+
+Escalating repeat detection for an agent's tool calls. A local
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin
 that registers one synchronous gate on the public `ctx.tools.guard` API. A
 measure repeated inside the agent's sliding window is not stopped at the first
