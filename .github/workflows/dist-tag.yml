@@ -1,0 +1,62 @@
+name: Move a dist-tag
+
+# npm versions are immutable, so a tag can only be MOVED, never republished. This workflow
+# exists because there are no npm credentials on the development machine: every registry
+# write goes through npm Trusted Publishing (OIDC), and that path has to be triggered from
+# Actions rather than from a shell.
+#
+# Typical use: a release line moved (0.8.x targets dsh 0.1.7 and cannot run on 0.1.5), so
+# `latest` has to follow the line once the consumers of the old line have migrated.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version the tag should point at (e.g. 0.8.0)'
+        required: true
+        type: string
+      tag:
+        description: 'Dist-tag to move (e.g. latest)'
+        required: true
+        default: 'latest'
+        type: string
+
+permissions:
+  contents: read
+  id-token: write          # the OIDC request URL is absent without this
+
+jobs:
+  dist-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Use a CLI that can do trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Refuse to point a tag at a version that does not exist
+        run: |
+          set -euo pipefail
+          NAME=$(node -p "require('./package.json').name")
+          echo "package: $NAME  version: ${{ inputs.version }}  tag: ${{ inputs.tag }}"
+          FOUND=$(npm view "$NAME@${{ inputs.version }}" version 2>/dev/null || true)
+          [ "$FOUND" = "${{ inputs.version }}" ] || {
+            echo "::error::$NAME@${{ inputs.version }} is not on the registry (got: '${FOUND:-nothing}')"; exit 1;
+          }
+
+      - name: Tags before
+        run: npm dist-tag ls
+
+      - name: Move the tag
+        run: |
+          set -euo pipefail
+          NAME=$(node -p "require('./package.json').name")
+          npm dist-tag add "$NAME@${{ inputs.version }}" "${{ inputs.tag }}"
+
+      - name: Tags after
+        run: npm dist-tag ls
