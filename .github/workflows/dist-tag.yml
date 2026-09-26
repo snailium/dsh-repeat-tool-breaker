@@ -7,6 +7,16 @@ name: Move a dist-tag
 #
 # Typical use: a release line moved (0.8.x targets dsh 0.1.7 and cannot run on 0.1.5), so
 # `latest` has to follow the line once the consumers of the old line have migrated.
+#
+# MEASURED (2026-09-26): npm's Trusted Publishing covers `npm publish`, NOT dist-tag
+# operations. Running this job with OIDC alone fails as
+#
+#     npm error code E401
+#     npm error Unable to authenticate, your authentication token seems to be invalid.
+#
+# So the tag move needs either an NPM_TOKEN repository secret (set NODE_AUTH_TOKEN, see the
+# step below) or a click on the package's npmjs.com settings page — Versions -> tag. The job
+# still refuses to point a tag at a version that is not on the registry.
 
 on:
   workflow_dispatch:
@@ -53,8 +63,14 @@ jobs:
         run: npm dist-tag ls
 
       - name: Move the tag
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "::error::OIDC cannot move a dist-tag (measured: E401). Either add an NPM_TOKEN repo secret, or move the tag in the npm UI: package -> Versions."
+            exit 1
+          fi
           NAME=$(node -p "require('./package.json').name")
           npm dist-tag add "$NAME@${{ inputs.version }}" "${{ inputs.tag }}"
 
