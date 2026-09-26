@@ -3,6 +3,20 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-09-26
+
+**No behaviour change since 0.8.0.** This release exists to move the `latest` dist-tag onto
+the dsh 0.1.7 line, which is the only way this project can move a tag: npm's Trusted
+Publishing covers `npm publish` and nothing else (a `npm dist-tag add` run under the same
+OIDC setup fails `E401 Unable to authenticate`, measured), npm's website exposes no dist-tag
+UI, and published versions are immutable — so the tag follows a new version instead of being
+moved in place.
+
+`latest` therefore resolves to **0.8.1**, which targets **dsh >= 0.1.7**. On dsh 0.1.5 install
+**0.7.x**: a fresh install of the 0.8 line there loses the **settings page** (everything else —
+repeat detection, denial, the shell-HTTP block and the advisories — works, verified on
+0.1.5-rc.2).
+
 ## [0.8.0] - 2026-09-25
 
 **BREAKING: this release targets dsh 0.1.7 (session format 4) only.** 0.1.7 removed the
@@ -973,7 +987,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.1...v0.6.2
