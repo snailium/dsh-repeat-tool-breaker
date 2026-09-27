@@ -3,6 +3,46 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-09-26
+
+### Fixed — the shell-HTTP block refused ordinary work
+
+Measured on session `face7ffb-0f53-46a6-aa86-94a3b98346be` (dsh 0.1.7): **four of 164 tool
+calls were stopped and every one of them was legitimate** — three python scripts talking to a
+**local** endpoint, and one that fetched nothing at all. Three separate causes, all fixed:
+
+- **The short HTTPie name left the default blacklist.** As a segment's first token that word
+  is overwhelmingly *data* — a status write-out format string, a JSON scheme value, a list of
+  schemes — and a refusal there has no address to exempt it. `httpie` is spelled out instead.
+  An operator who wants the short name can add it back to `shellHttpBlock`.
+- **The local exemption is now evaluated over the whole command, not per segment.** The
+  command splitter breaks a heredoc on newlines and commas, so a script's request API and its
+  address arrive in **different** segments; the per-segment test saw "an API with no address"
+  and refused it, while the per-segment exemption could never fire. A command whose every
+  address is local is now never a remote fetch, whatever mechanism it uses.
+- **`FETCH_API` names a call, not a module.** Matching the bare module name refused scripts
+  that merely **imported** a request library — including one that made no request at all. Each
+  alternative now requires the invocation itself (`urlopen(`, `requests.get(`, `httpx.get(`,
+  `fetch(`, `Invoke-WebRequest`, a require-style client call, …).
+
+Unchanged on purpose: `blockLocalHttp: true` still blocks the local cases, and an empty
+`shellHttpBlock` remains the documented off-switch. Remote fetches are refused exactly as
+before — eight mechanisms are pinned in the new test.
+
+### Added
+
+- `test/shell-http-block.test.js` — ten cases built from the commands that were refused.
+- `tools/shell-http-fp-probe.mjs` — the false-positive probe that found them (25 must-allow
+  and must-block cases), plus `test/fixtures/session-face7ffb-shell-http-refusals.json`, the
+  corpus the commands came from.
+
+### Note on the earlier coverage claim
+
+The previous "0 false positives over 28,471 recorded calls" was a **corpus blind spot**:
+neither a status write-out format string nor a python script against a local endpoint occurs
+in that corpus. Both shapes are pinned now, so the claim has a test behind it instead of a
+corpus assumption.
+
 ## [0.8.1] - 2026-09-26
 
 **No behaviour change since 0.8.0.** This release exists to move the `latest` dist-tag onto
@@ -987,7 +1027,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.6.2...v0.7.0

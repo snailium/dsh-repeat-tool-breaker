@@ -489,13 +489,15 @@ at which point `ctx.tools.guard` is the genuine method.
         onLimit: ask                # ask | deny — what happens at either gate
         localHosts: deny            # deny | allow — see "Local addresses"
         # Refuse HTTP made from the shell; send the model to web_fetch_file instead.
-        blockShellHttp: true        # semantic: any shell call targeting a non-local URL; fail-safe (no-op without the tool)
+        blockShellHttp: true        # refuse a shell call that fetches over HTTP; fail-safe (no-op without the tool)
         blockLocalHttp: false       # local addresses stay in the shell — the fetch tool cannot reach them
-          shellHttpAllow:             # verbs the block leaves alone — see "Should verb X be exempt?"
-            - git
-            - docker
-            - grep
-            - rg
+        shellHttpBlock:             # the verbs the block REFUSES; `[]` switches the block off entirely
+          - curl
+          - wget
+          - httpie
+          # the short HTTPie name is deliberately NOT a default: as a segment's first token it
+          # is almost always data (a status write-out format string, a JSON scheme value), and a
+          # refusal there has no address to exempt. Add it back here if you want it.
         # web_fetch_file — registered only when the profile has ctx.web
         outputDir: fetched          # relative to the workspace root; /tmp does NOT survive between shell calls
         maxBytes: 8388608           # our own cap; the web provider caps first
@@ -561,12 +563,16 @@ that isn't yet in the composed tree.)
 
 The knobs an operator is most likely to want mid-session are editable in the Web UI,
 without a restart: open **Settings → Plugins** and expand **Repeat tool breaker**. Seven
-fields — `blockShellHttp`, `blockLocalHttp`, `shellHttpAllow`, `warnAt`, `summarizeAt`,
+fields — `blockShellHttp`, `blockLocalHttp`, `shellHttpBlock`, `warnAt`, `summarizeAt`,
 `failWarnAt`, `failLimit` — are staged and written on **Save**; a per-field
 `Overridden` badge with a `Reset` stages a clear back to the composition layer. A
 refused write keeps the draft and reports the failure rather than dropping the edit.
-The namespace is registered with `applies: 'live'`, so a saved value takes effect on the
-next call; the change lands in `settings.yaml` under `repeat-tool-breaker:`.
+A saved value takes effect on the next call, without a remount: the namespace is the
+plugin's loader entry id, and the form is derived from the plugin's exported `Config`,
+whose fields are all marked volatile so dsh hands the loader live references rather than
+copies. The change lands in the **managed** settings document (`$DSH_HOME/settings.yaml`),
+which dsh owns — a hand-written file of that name is imported once and renamed
+`settings.yaml.imported`, so edit it through the UI or the profile patch layer instead.
 
 This works because the plugin ships **both halves**, which is a requirement rather than
 an implementation detail. The Plugins page renders the *intersection* of two ledgers:
