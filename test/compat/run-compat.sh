@@ -76,6 +76,7 @@ run_scenario() {
   DSH_HOME="$COMPAT_HOME" MOCK_API_KEY=mock timeout 600 "$DSH_BIN" --profile probe "compat check" 2>&1 | tail -3
   COMPAT_HOME="$COMPAT_HOME" EXPECT_EXECUTED="$expected_executed" EXPECT_TOTAL="$expected_total" \
     LABEL="$label" EXPECT_ADVISORY="${EXPECT_ADVISORY:-}" EXPECT_DENIAL="${EXPECT_DENIAL:-}" \
+    EXPECT_TEXT="${EXPECT_TEXT:-}" EXPECT_FILE="${EXPECT_FILE:-}" EXPECT_ANY_ERROR="${EXPECT_ANY_ERROR:-}" \
     MOCK_LOG="$LOG" python3 - <<'PY'
 import glob, json, os, subprocess, sys
 
@@ -133,6 +134,20 @@ if len(executed) != expected_executed:
     sys.exit(f'FAIL: expected {expected_executed} executed attempts, saw {len(executed)}')
 if len(denied) != expected_total - expected_executed:
     sys.exit(f'FAIL: expected {expected_total - expected_executed} denied attempts, saw {len(denied)}')
+expect_text = os.environ.get('EXPECT_TEXT', '')
+if expect_text and not any(expect_text in text for _, text in results):
+    sys.exit(f'FAIL: no executed result carried {expect_text!r}; the tool did not do its job.\n  '
+             + repr([t[:160] for _, t in results]))
+expect_file = os.environ.get('EXPECT_FILE', '')
+if expect_file:
+    written = glob.glob(expect_file, recursive=True)
+    if not written:
+        sys.exit(f'FAIL: {expect_file} was never written')
+    sizes = [(p, os.path.getsize(p)) for p in written]
+    if all(size == 0 for _, size in sizes):
+        sys.exit(f'FAIL: {expect_file} exists but every match is empty: {sizes}')
+    print('  wrote: ' + ', '.join(f'{p} ({size}B)' for p, size in sizes))
+
 denial = os.environ.get('EXPECT_DENIAL', '')
 if denial:
     if denial not in whole_log:
@@ -152,7 +167,7 @@ if advisory:
 # shell HTTP block's refusal. Either means the model was told WHY it was stopped.
 markers = ('REPEAT_TOOL_BLOCKED', 'SHELL_HTTP_BLOCKED')
 breaker = [t for _, t in denied if any(m in t for m in markers)]
-if denied and not breaker:
+if denied and not breaker and os.environ.get('EXPECT_ANY_ERROR', '') != '1':
     sys.exit('FAIL: no denied attempt carried the breaker\'s own message: '
              + repr([t[:120] for _, t in denied]))
 print(f'  -> {len(executed)} executed, {len(denied)} denied, '
@@ -275,5 +290,27 @@ echo "=== shell HTTP block (remote fetch refused, tool named) ==="
 EXPECT_DENIAL="SHELL_HTTP_BLOCKED" \
   run_scenario "remote curl is refused" 0 2 \
   MOCK_REPEATS=2 MOCK_COMMAND="curl -s https://weather.gc.ca/historical_data/search_historic_data_e.html"
+
+# Scenario 6 — WEB_FETCH_FILE, the tool every denial above points at. Loopback is refused BY
+# DESIGN (the tool inherits ctx.web's SSRF guard), so the network-free half asserts exactly
+# that: the call is EXECUTED, never refused by the breaker, and reports the guard's own
+# wording. That is the end-to-end proof the tool still registers and still reaches ctx.web.
+echo "=== web_fetch_file end to end (the tool the block redirects to) ==="
+rm -rf "$PWD/fetched"
+EXPECT_ANY_ERROR=1 EXPECT_TEXT='non-public IP address' \
+  run_scenario "web_fetch_file is executed and inherits the SSRF guard" 0 1 \
+  MOCK_REPEATS=1 MOCK_TOOL=web_fetch_file MOCK_TOOL_ARGS="{\"url\": \"http://127.0.0.1:9/x\"}"
+
+# …and the succeeding half needs the open internet. DNS, not HTTP: a shell fetch is the thing
+# this plugin refuses, so the probe must not use one. A skipped half is reported as skipped.
+if getent hosts example.com >/dev/null 2>&1; then
+  FETCHED_GLOB="$PWD/fetched/**/*"
+  rm -rf "$PWD/fetched"
+  EXPECT_TEXT='Fetched (HTTP 200)' EXPECT_FILE="$FETCHED_GLOB" \
+    run_scenario "web_fetch_file fetches a public page and writes it" 1 1 \
+    MOCK_REPEATS=1 MOCK_TOOL=web_fetch_file MOCK_TOOL_ARGS="{\"url\": \"https://example.com/\"}"
+else
+  echo "  SKIPPED: no DNS for example.com, so the successful-fetch half cannot run here"
+fi
 
 echo "COMPAT: PASS"

@@ -29,6 +29,11 @@ REPEATS = int(os.environ.get('MOCK_REPEATS', '4'))
 PATHS = [p for p in os.environ.get('MOCK_PATHS', '').split(',') if p]
 LOCAL_PATH = os.environ.get('MOCK_LOCAL_PATH', '')
 PAGE_BASE = os.environ.get('MOCK_PAGE_BASE', '')
+# Which tool the scripted assistant calls. `bash` is what every occurrence/failure scenario
+# needs; a scenario about a TOOL the plugin ships (web_fetch_file) has to call that tool
+# instead, and its arguments are then given verbatim rather than built from `command_for`.
+TOOL = os.environ.get('MOCK_TOOL', 'bash')
+TOOL_ARGS = os.environ.get('MOCK_TOOL_ARGS', '')
 
 
 def command_for(turn: int) -> str:
@@ -62,8 +67,11 @@ def frames(tool_results: int):
                 'id': f'call_{tool_results + 1}',
                 'type': 'function',
                 'function': {
-                    'name': 'bash',
-                    'arguments': json.dumps({'command': command_for(tool_results), 'description': 'compat check'}),
+                    'name': TOOL,
+                    'arguments': TOOL_ARGS or json.dumps({
+                        'command': command_for(tool_results),
+                        'description': 'compat check',
+                    }),
                 },
             }],
         })
