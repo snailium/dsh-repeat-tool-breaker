@@ -3,6 +3,38 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed — the card renders on the bundle's configuration page
+
+The Plugins page serves three configuration slots and they are keyed differently:
+`plugins.item` is a **list** slot (entries matched by `id`, filtered with `{only}`) that feeds
+the page's item list and each row's one-liner, while `plugins.bundle.config` is a **keyed**
+slot (entries matched by `key`, filtered with `{entryKey: pkg.name}`) that renders a package's
+configuration form. The card claimed the list slot for both jobs, which put the same settings
+in two homes — the item's detail page and the package's page.
+
+The form now lives on the bundle slot, keyed by the **package** name (not the settings
+namespace), and the list slot keeps the label and the one-liner. A wrong keyed option is
+silent rather than loud: the page's "configured" ledger is `keysOf('plugins.bundle.config')`,
+so an entry whose key is not the package name simply leaves the package un-configurable. The
+name is therefore a pinned constant, asserted against `package.json` by the suite.
+
+Verified on dsh 0.1.7-rc.2 and 0.2.0-rc.2 in isolated instances: the form renders with all
+seven fields on the package page, the item's detail page keeps its summary and shows no empty
+gap, and a Save from the new home lands in the profile patch.
+
+### Added
+
+- `test/compat`: a sixth scenario that calls `web_fetch_file` end to end — the tool every
+  denial points at had never been exercised. The mock gains `MOCK_TOOL` / `MOCK_TOOL_ARGS` so
+  a scenario can emit any tool call, and the harness gains `EXPECT_TEXT` / `EXPECT_FILE` /
+  `EXPECT_ANY_ERROR`. One half asserts the inherited SSRF guard (loopback is refused BY
+  DESIGN); the other fetches a public page and asserts a non-empty file, skipped with a
+  printed note when DNS is unavailable so the suite never fails merely for lack of network.
+- `tools/compare-rtb-surfaces.sh` — file-identity and invariant comparison across two
+  installed dsh lines, for this plugin's surfaces. Run when a dsh release lands.
+
 ## [0.8.3] - 2026-09-27
 
 ### Fixed — the shell-HTTP block refused ordinary work in a second session

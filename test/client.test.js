@@ -21,6 +21,7 @@ import { DEFAULTS, mergeDefaults, validateCfg } from '../lib/defaults.js'
 import { Config, name as PLUGIN_NAME } from '../index.js'
 
 const CLIENT_SOURCE = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+const MANIFEST = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 
 /**
  * Load the bundle the way the browser does. The bundle is a classic script that only
@@ -181,6 +182,32 @@ function fakeClientCtx(scope) {
   return { ctx, captured }
 }
 
+/**
+ * The registration that carries the FORM.
+ *
+ * The card claims two slots and only the keyed bundle slot injects the form, so a test that
+ * wants to drive a draft must ask for this one by name rather than by position.
+ *
+ * @param captured - what `apply` claimed.
+ * @returns the bundle config registration.
+ */
+function formCard(captured) {
+  const entry = captured.registrations.find((item) => item.options.name === 'plugins.bundle.config')
+  if (entry === undefined) throw new Error('the plugins.bundle.config slot was never claimed')
+  return entry
+}
+
+/**
+ * The registration that carries the list LABEL and the one-line description.
+ * @param captured - what `apply` claimed.
+ * @returns the list-slot registration.
+ */
+function listCard(captured) {
+  const entry = captured.registrations.find((item) => item.options.name === 'plugins.item')
+  if (entry === undefined) throw new Error('the plugins.item slot was never claimed')
+  return entry
+}
+
 test('C1: the bundle registers itself under the package name the boot graph uses', async () => {
   const { registration } = await loadBundle()
   assert.equal(registration.id, 'dsh-repeat-tool-breaker', 'the loader id must be the package name')
@@ -214,15 +241,38 @@ test('C4: the claimed slot key is the namespace the Host registers', async () =>
   const scope = fakeScope()
   const { ctx, captured } = fakeClientCtx(scope)
   face.apply(ctx)
-  assert.deepEqual(captured.slotInjects, ['plugins.item'])
-  assert.equal(captured.registrations.length, 1)
-  assert.equal(captured.registrations[0].options.name, 'plugins.item')
+  // Two slots, one card: the LIST slot carries the item's label and one-liner, the KEYED
+  // slot carries the form. Injecting into only the list slot is what put the same settings
+  // on the row's page as well.
+  assert.deepEqual(captured.slotInjects.sort(), ['plugins.bundle.config', 'plugins.item'])
+  assert.equal(captured.registrations.length, 2)
+
+  const item = listCard(captured)
+  assert.equal(item.options.name, 'plugins.item')
   // Since dsh 0.1.7 the served namespace is the loader ENTRY ID, which this project keeps
   // equal to the cordis plugin name. A card key that does not match renders nothing.
-  assert.equal(captured.registrations[0].options.id, PLUGIN_NAME, 'the slot id must be the loader entry id the Host serves')
-  assert.equal(typeof captured.registrations[0].options.label, 'function')
+  assert.equal(item.options.id, PLUGIN_NAME, 'the slot id must be the loader entry id the Host serves')
+  assert.equal(typeof item.options.label, 'function')
+
+  const form = formCard(captured)
+  assert.equal(form.options.name, 'plugins.bundle.config')
+  // The KEYED slot is matched by PACKAGE name (`{entryKey: pkg.name}`), NOT by the settings
+  // namespace, and the page's "configured" ledger reads the same option. A wrong key does not
+  // raise — it leaves the package un-configurable and renders no section at all.
+  assert.equal(
+    form.options.key,
+    MANIFEST.name,
+    'the keyed slot must carry the PACKAGE name from package.json — the page filters on it',
+  )
+  assert.equal(
+    form.options.key,
+    face.PACKAGE_NAME,
+    'the card hard-codes that name, so a package rename fails HERE instead of silently',
+  )
+  assert.equal(typeof form.options.label, 'function')
+  assert.equal(typeof form.options.inject, 'function')
   assert.equal(captured.bound, PLUGIN_NAME)
-  assert.equal(typeof captured.registrations[0].component, 'function')
+  assert.equal(typeof form.component, 'function')
 })
 
 test('C5: the card edits exactly the fields the Host schema declares, and no others', async () => {
@@ -270,7 +320,7 @@ test('C7: an edit is staged, and only a save writes it', async () => {
   const scope = fakeScope()
   const { ctx, captured } = fakeClientCtx(scope)
   face.apply(ctx)
-  const props = captured.registrations[0].options.inject()
+  const props = formCard(captured).options.inject()
   const store = props.hooks.repeatToolBreaker
   assert.deepEqual(scope.calls.ops, [], 'apply itself must write nothing')
 
@@ -293,7 +343,7 @@ test('C8: an invalid draft blocks the save instead of being dropped', async () =
   const scope = fakeScope()
   const { ctx, captured } = fakeClientCtx(scope)
   face.apply(ctx)
-  const props = captured.registrations[0].options.inject()
+  const props = formCard(captured).options.inject()
   const store = props.hooks.repeatToolBreaker
 
   props.edit('warnAt', 'seven')
@@ -310,7 +360,7 @@ test('C9: discard drops the drafts and leaves the Host untouched', async () => {
   const scope = fakeScope()
   const { ctx, captured } = fakeClientCtx(scope)
   face.apply(ctx)
-  const props = captured.registrations[0].options.inject()
+  const props = formCard(captured).options.inject()
   const store = props.hooks.repeatToolBreaker
 
   props.edit('failLimit', '8')
@@ -326,7 +376,7 @@ test('C10: reset stages a clear so the field re-inherits the composition layer',
   const scope = fakeScope({ user: { warnAt: 9 }, value: { ...DEFAULTS, warnAt: 9 } })
   const { ctx, captured } = fakeClientCtx(scope)
   face.apply(ctx)
-  const props = captured.registrations[0].options.inject()
+  const props = formCard(captured).options.inject()
   const store = props.hooks.repeatToolBreaker
 
   assert.equal(store.getSnapshot().fields.warnAt.overridden, true, 'the user layer carries it')
@@ -342,7 +392,7 @@ test('C11: a comma list is normalized, so the control can be typed loosely', asy
   const scope = fakeScope()
   const { ctx, captured } = fakeClientCtx(scope)
   face.apply(ctx)
-  const props = captured.registrations[0].options.inject()
+  const props = formCard(captured).options.inject()
   const store = props.hooks.repeatToolBreaker
 
   props.edit('shellHttpBlock', ' curl , wget ,curl,  ')
@@ -356,7 +406,7 @@ test('C12: a boolean field renders the literal the settings document uses', asyn
   const scope = fakeScope()
   const { ctx, captured } = fakeClientCtx(scope)
   face.apply(ctx)
-  const props = captured.registrations[0].options.inject()
+  const props = formCard(captured).options.inject()
   const store = props.hooks.repeatToolBreaker
 
   assert.equal(store.getSnapshot().fields.blockShellHttp.text, String(DEFAULTS.blockShellHttp))
@@ -371,13 +421,13 @@ test('C13: an unserved namespace still renders, and the shared chrome says so', 
   const scope = fakeScope({ status: 'loading' })
   const { ctx, captured } = fakeClientCtx(scope)
   face.apply(ctx)
-  const options = captured.registrations[0].options
+  const options = formCard(captured).options
   const props = options.inject()
   const store = props.hooks.repeatToolBreaker
 
   assert.equal(store.getSnapshot().available, false)
-  const rendered = captured.registrations[0].component({
-    view: 'form',
+  const rendered = formCard(captured).component({
+    view: 'page',
     t: (key) => key,
     useRepeatToolBreaker: (selector) => selector(store.getSnapshot()),
     edit() {},
@@ -396,11 +446,11 @@ test('C14: a served namespace renders the card, collapsed, with the save disable
   const scope = fakeScope()
   const { ctx, captured } = fakeClientCtx(scope)
   face.apply(ctx)
-  const props = captured.registrations[0].options.inject()
+  const props = formCard(captured).options.inject()
   const store = props.hooks.repeatToolBreaker
 
-  const rendered = captured.registrations[0].component({
-    view: 'form',
+  const rendered = formCard(captured).component({
+    view: 'page',
     t: (key) => key,
     useRepeatToolBreaker: (selector) => selector(store.getSnapshot()),
     edit() {},
@@ -414,8 +464,9 @@ test('C14: a served namespace renders the card, collapsed, with the save disable
   assert.equal(rendered.props.state.available, true)
 
   // The summary view is what the LIST renders as the row description; without it the page
-  // falls back to the package description, which is not the card's copy.
-  const summary = captured.registrations[0].component({
+  // falls back to the package description, which is not the card's copy. It lives on the list
+  // entry — the form entry answers nothing for a view its slot never asks for.
+  const summary = listCard(captured).component({
     view: 'summary',
     t: (key) => key,
     useRepeatToolBreaker: (selector) => selector(store.getSnapshot()),
@@ -435,7 +486,7 @@ test('C15: a failing write keeps the draft and reports the failure', async () =>
   }
   const { ctx, captured } = fakeClientCtx(scope)
   face.apply(ctx)
-  const props = captured.registrations[0].options.inject()
+  const props = formCard(captured).options.inject()
   const store = props.hooks.repeatToolBreaker
 
   props.edit('failWarnAt', '4')
