@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.4] - 2026-09-29
 
 ### Changed — the card renders on the bundle's configuration page
 
@@ -34,6 +34,8 @@ gap, and a Save from the new home lands in the profile patch.
   printed note when DNS is unavailable so the suite never fails merely for lack of network.
 - `tools/compare-rtb-surfaces.sh` — file-identity and invariant comparison across two
   installed dsh lines, for this plugin's surfaces. Run when a dsh release lands.
+
+## [Unreleased]
 
 ## [0.8.3] - 2026-09-27
 
@@ -1100,7 +1102,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.4...HEAD
+[0.8.4]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.0...v0.8.1
