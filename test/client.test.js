@@ -197,17 +197,6 @@ function formCard(captured) {
   return entry
 }
 
-/**
- * The registration that carries the list LABEL and the one-line description.
- * @param captured - what `apply` claimed.
- * @returns the list-slot registration.
- */
-function listCard(captured) {
-  const entry = captured.registrations.find((item) => item.options.name === 'plugins.item')
-  if (entry === undefined) throw new Error('the plugins.item slot was never claimed')
-  return entry
-}
-
 test('C1: the bundle registers itself under the package name the boot graph uses', async () => {
   const { registration } = await loadBundle()
   assert.equal(registration.id, 'dsh-repeat-tool-breaker', 'the loader id must be the package name')
@@ -241,18 +230,13 @@ test('C4: the claimed slot key is the namespace the Host registers', async () =>
   const scope = fakeScope()
   const { ctx, captured } = fakeClientCtx(scope)
   face.apply(ctx)
-  // Two slots, one card: the LIST slot carries the item's label and one-liner, the KEYED
-  // slot carries the form. Injecting into only the list slot is what put the same settings
-  // on the row's page as well.
-  assert.deepEqual(captured.slotInjects.sort(), ['plugins.bundle.config', 'plugins.item'])
-  assert.equal(captured.registrations.length, 2)
-
-  const item = listCard(captured)
-  assert.equal(item.options.name, 'plugins.item')
-  // Since dsh 0.1.7 the served namespace is the loader ENTRY ID, which this project keeps
-  // equal to the cordis plugin name. A card key that does not match renders nothing.
-  assert.equal(item.options.id, PLUGIN_NAME, 'the slot id must be the loader entry id the Host serves')
-  assert.equal(typeof item.options.label, 'function')
+  // ONE slot. The card used to claim `plugins.item` as well, but that LIST is built from the
+  // same slot dsh's OWN plugins register into, so the entry made this third-party plugin
+  // appear under "Official" — and once the form moved to the bundle slot it was an entry that
+  // said "official" and led to a page with no settings on it. A non-dsh plugin claims the
+  // bundle slot only.
+  assert.deepEqual(captured.slotInjects, ['plugins.bundle.config'])
+  assert.equal(captured.registrations.length, 1)
 
   const form = formCard(captured)
   assert.equal(form.options.name, 'plugins.bundle.config')
@@ -264,6 +248,9 @@ test('C4: the claimed slot key is the namespace the Host registers', async () =>
     MANIFEST.name,
     'the keyed slot must carry the PACKAGE name from package.json — the page filters on it',
   )
+  // The namespace still gates the whole registration (whileServed), and it is the loader
+  // ENTRY ID the Host serves — a mismatch means the form never mounts.
+  assert.equal(captured.bound, PLUGIN_NAME)
   assert.equal(
     form.options.key,
     face.PACKAGE_NAME,
@@ -463,19 +450,21 @@ test('C14: a served namespace renders the card, collapsed, with the save disable
   assert.equal(rendered.children[0].type, 'SettingsValueField')
   assert.equal(rendered.props.state.available, true)
 
-  // The summary view is what the LIST renders as the row description; without it the page
-  // falls back to the package description, which is not the card's copy. It lives on the list
-  // entry — the form entry answers nothing for a view its slot never asks for.
-  const summary = listCard(captured).component({
-    view: 'summary',
-    t: (key) => key,
-    useRepeatToolBreaker: (selector) => selector(store.getSnapshot()),
-    edit() {},
-    resetField() {},
-    save() {},
-    discard() {},
-  })
-  assert.equal(summary, 'description')
+  // The form answers ONLY the view its slot asks for. Nothing serves a summary any more —
+  // the Installed entry shows the PACKAGE description — so a stray view must render nothing
+  // rather than a half-card.
+  for (const view of ['summary', 'form', 'detail']) {
+    const stray = formCard(captured).component({
+      view,
+      t: (key) => key,
+      useRepeatToolBreaker: (selector) => selector(store.getSnapshot()),
+      edit() {},
+      resetField() {},
+      save() {},
+      discard() {},
+    })
+    assert.equal(stray, null, `view ${JSON.stringify(view)} must render nothing on the bundle slot`)
+  }
 })
 
 test('C15: a failing write keeps the draft and reports the failure', async () => {

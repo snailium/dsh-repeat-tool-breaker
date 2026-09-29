@@ -3,6 +3,27 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.8.5] - 2026-09-29
+
+### Changed — the card no longer appears under Official
+
+The Plugins page builds its item list from `ctx.slots.entries("plugins.item")` — the same slot
+dsh's own plugins register into, which is where Shell, Agent loop, Subagent and Web search come
+from. Claiming it made this third-party plugin show up under **Official**, beside shipped ones.
+After 0.8.4 moved the form to the keyed `plugins.bundle.config` slot, that entry was left
+holding only a label and a one-liner: an item that announced an official plugin and led to a
+page with no settings on it.
+
+The list registration is gone. The card claims `plugins.bundle.config` only, so the plugin
+appears where every other non-dsh plugin does — in **Installed**, with the package description
+and the configuration form. Nothing serves a summary view any more, and the component answers
+only the view its slot asks for, so a stray view renders nothing rather than a half-card.
+
+Verified on dsh 0.1.7-rc.2 and 0.2.0-rc.2: absent from Official, present in Installed, form with
+all seven fields and Save on the package page.
+
 ## [0.8.4] - 2026-09-29
 
 ### Changed — the card renders on the bundle's configuration page
@@ -1102,7 +1123,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.4...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.5...HEAD
+[0.8.5]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.1...v0.8.2
