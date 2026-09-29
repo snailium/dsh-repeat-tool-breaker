@@ -3,6 +3,47 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] - 2026-09-27
+
+### Fixed — the shell-HTTP block refused ordinary work in a second session
+
+Measured on session `12b8bd5b` (dsh 0.1.7, 174 tool calls): **eight refusals, seven of them
+legitimate**. The agent was installing software on another machine over `ssh`, and the block
+was judging the words *inside* that remote payload as if they had been typed here.
+
+- **A remote payload is judged only when it runs HERE.** `ssh localhost '…'` is a local fetch
+  wearing a costume and is still refused — with `sshpass` and `mosh` counted as shells for the
+  same reason. An `ssh` to another machine fetches over there, where `web_fetch_file` cannot
+  act, so judging it refused remote administration and nothing else, down to "does the target
+  even have these tools?". A target that cannot be resolved from the text (a variable, a
+  command substitution) is treated as elsewhere: a false refusal costs a whole tool call, which
+  is this project's standing trade.
+- **Splitting is quote-aware.** A quoted `;` or `|` no longer cuts a command apart. That is
+  what made a remote payload unrecognisable, and it also turned a quoted regex such as
+  `grep -iE "^(wget|curl)$"` into a candidate starting with a fetch verb.
+- **A name list is data**: `command -v X`, `command -V X`, `which X` and `type X` look names
+  up. `command X` without a lookup flag still executes, and is still judged.
+- **A named verb needs an argument.** A bare `curl` prints usage and fetches nothing, so a lone
+  word inside a regex, a label or a banner is no longer a refusal.
+- **A heredoc written to a file is not run by this call.** `cat > f <<EOF … curl … EOF` authors
+  a script; the fetch happens when something else runs that file. A body handed to an
+  interpreter (`python3 - <<PY`, `bash <<EOF`) still runs here and is judged exactly as before.
+
+Known limit, stated rather than hidden: the target check reads the TEXT, so an `ssh` alias in
+`~/.ssh/config` that points at this machine is still a hole. Closing it means parsing the ssh
+configuration, which is a different size of change.
+
+Verified: 121 unit tests — three new groups plus the two assertions that encoded the previous
+behaviour — the 25-case probe at zero disagreement, the session replay (seven of the eight now
+allowed, the remaining refusal being the local fetch that *should* be refused), and the 0.1.7
+compat suite.
+
+### Added
+
+- `test/fixtures/session-12b8bd5b-shell-http-refusals.json` — the eight real commands with
+  identities, hosts, addresses, key paths and repository names removed and the command shapes
+  kept verbatim, so the next retune can replay what actually happened.
+
 ## [0.8.2] - 2026-09-26
 
 ### Fixed — the shell-HTTP block refused ordinary work
@@ -1027,7 +1068,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.7.0...v0.8.0

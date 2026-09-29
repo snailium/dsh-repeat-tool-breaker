@@ -143,3 +143,91 @@ test('B8: the blacklist is the block\'s off-switch', () => {
   // override. `blockLocalHttp: true` is how an operator overrides it (pinned in B7).
   assert.equal(refused('curl -s ' + LOCAL_MODELS, { shellHttpBlock: ['curl', 'wget'] }), false)
 })
+
+test('B9: a REMOTE payload is not this machine\'s fetch', () => {
+  // Every shape below is a real refusal from session 12b8bd5b, where an agent was installing
+  // software on a Steam Machine (192.168.111.142). `web_fetch_file` cannot run anything over
+  // there, so judging these words refused remote administration and nothing else — including
+  // "does the target even have curl?".
+  const allowed = [
+    "ssh -i key -o ConnectTimeout=15 deck@192.168.111.142 'command -v wget curl python3; echo ---; timeout 20 wget --version | head -1'",
+    'ssh deck@192.168.111.142 \'ls /usr/bin/ | grep -iE "^(wget|curl|aria2c|python3)$"\'',
+    "scp -i key /tmp/install.sh deck@host:/home/deck/install.sh && ssh deck@host 'command -v curl od sha256sum install stat'",
+    // the model even obfuscated the word to get past the block, and was still refused
+    'ssh deck@host \'printf "  %-10s " "curl"; command -v c""url >/dev/null 2>&1 && echo present\'',
+    'ssh deck@host \'ls /usr/bin/ | grep -c "^curl$" | xargs -I{} echo "curl count: {}"\'',
+    'rsync -a /src/ host:/dst/ && mosh host',
+  ]
+  for (const command of allowed) {
+    assert.equal(refused(command), false, 'a remote payload must not be judged: ' + command.slice(0, 60))
+  }
+
+  // The payload is opaque, not the whole ssh line: a remote client is never itself a fetch.
+  assert.equal(refused('ssh host'), false)
+
+  // The costume the rule exists for: an `ssh` to THIS machine is a local fetch, so its payload
+  // is judged exactly as if it had been typed locally. `localhost` and loopback cover the
+  // reachable aliases; an address of a local interface is handled by `isThisMachineHost`.
+  for (const command of [
+    "ssh localhost 'curl -s " + REMOTE + "/x'",
+    "ssh 127.0.0.1 'curl -s " + REMOTE + "/x'",
+    "ssh -i key -o ConnectTimeout=5 127.0.0.1 'wget -q " + REMOTE + "/x'",
+    "sshpass -p x ssh localhost 'curl -s " + REMOTE + "/x'",
+    "mosh 127.0.0.1 'curl -s " + REMOTE + "/x'",
+  ]) {
+    assert.equal(refused(command), true, 'a payload that runs HERE must still be judged: ' + command)
+  }
+
+  // A target that cannot be resolved from the text is treated as elsewhere. This is the
+  // project's standing trade: a false refusal costs a whole tool call, so an ambiguous host
+  // (a variable or a command substitution) does not buy a refusal.
+  assert.equal(refused("ssh $(hostname) 'curl -s " + REMOTE + "/x'"), false)
+  assert.equal(refused("ssh $TARGET 'curl -s " + REMOTE + "/x'"), false)
+
+  // …and a LOCAL shell still executes here, so a mechanism inside it is still a fetch.
+  assert.equal(refused("bash -c 'wget -q " + REMOTE + "/x'"), true)
+  assert.equal(refused("sudo curl -s " + REMOTE + '/x'), true)
+})
+
+test('B10: a name list, a quoted pattern and a bare word are data', () => {
+  const allowed = [
+    'command -v curl',
+    'command -V wget',
+    'which curl wget',
+    'type curl',
+    'grep -c "^curl$" /var/log/x',
+    'curl',
+    'wget',
+  ]
+  for (const command of allowed) {
+    assert.equal(refused(command), false, 'not a command position: ' + command)
+  }
+  // `command` WITHOUT a lookup flag EXECUTES its argument — it must stay refused, or rule 2
+  // would have opened a real hole.
+  assert.equal(refused('command curl -s ' + REMOTE + '/x'), true)
+  assert.equal(refused('command -p curl -s ' + REMOTE + '/x'), false, 'a flag the rule does not know is not a lookup')
+})
+
+test('B11: a heredoc written to a FILE is not run by this call', () => {
+  // The real steps 18 and 25: a script authored locally, then shipped with `scp`. Refusing the
+  // `cat` stopped nothing — the fetch happens when something else runs that file.
+  const inert = [
+    ["cat > /tmp/dl.sh <<'SCRIPT'", 'URL="' + REMOTE + '/v0.11.0/x"', 'curl -fL --max-time 120 -o "$DEST" "$URL" 2>&1 | tail -3', 'SCRIPT', 'scp /tmp/dl.sh deck@host:/home/deck/'].join('\n'),
+    ['cat > /tmp/nettest.sh <<SCRIPT', 'echo "can the target reach the internet at all?"', 'python3 -c "import urllib.request; urllib.request.urlopen(\'' + REMOTE + '\')"', 'SCRIPT', 'ssh host "bash /tmp/nettest.sh"'].join('\n'),
+  ]
+  for (const command of inert) {
+    assert.equal(refused(command), false, 'an inert heredoc must not be judged: ' + command.split('\n')[0])
+  }
+
+  // But a body handed to an INTERPRETER runs here, and is judged exactly as before.
+  assert.equal(
+    refused(['python3 - <<PY', 'import urllib.request', 'urllib.request.urlopen(' + JSON.stringify(REMOTE + '/x') + ')', 'PY'].join('\n')),
+    true,
+    'a heredoc fed to python still runs locally',
+  )
+  assert.equal(
+    refused(['bash <<EOF', 'curl -s ' + REMOTE + '/x', 'EOF'].join('\n')),
+    true,
+    'a heredoc fed to a shell still runs locally',
+  )
+})

@@ -1585,6 +1585,20 @@ test('T48g: the trigger is a MECHANISM, so an address alone is not a refusal', (
     // talking ABOUT fetching is not fetching
     "grep -rn 'curl' scripts/",
     "echo 'use wget or curl for this, see https://example.com/docs'",
+    // A REMOTE payload is not this machine's fetch (decision, v0.8.3): the block's remedy is
+    // `web_fetch_file`, which cannot run anything on the far side of an `ssh`. Judging those
+    // words refused remote administration and nothing else — measured: seven of eight
+    // refusals in one session, including "does the target even have curl?".
+    "ssh build-host 'curl -s https://api.example.com/x'",
+    "ssh deck@192.168.111.142 'command -v wget curl python3'",
+    "ssh deck@192.168.111.142 'ls /usr/bin/ | grep -iE \"^(wget|curl|aria2c)$\"'",
+    "scp -i key /tmp/install.sh deck@host:/home/deck/install.sh && ssh deck@host 'command -v curl od stat'",
+    // …and the same words when they are DATA rather than a command position
+    'command -v curl',
+    'which wget',
+    'type curl',
+    'grep -c "^curl$" /var/log/x',
+    'curl',
   ]
   for (const command of allowed) {
     assert.equal(verdict(guards, bash(command)), undefined, `must be allowed: ${command}`)
@@ -1595,7 +1609,6 @@ test('T48g: the trigger is a MECHANISM, so an address alone is not a refusal', (
     'curl -s https://api.example.com/x',
     'aria2c https://example.com/big.iso',
     'rclone copy https://example.com/f /tmp/f',
-    "ssh build-host 'curl -s https://api.example.com/x'",
     "bash -c 'wget -q https://example.com/x'",
     "sudo curl -s https://api.example.com/x",
     // an interpreter whose inline program names a request API
