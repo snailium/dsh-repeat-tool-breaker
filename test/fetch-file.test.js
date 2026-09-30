@@ -325,6 +325,13 @@ test('F16: the published package still ships its entry point', async () => {
   // guard against that class of mistake.
   const { readFileSync } = await import('node:fs')
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  // The dsh compatibility range has to be machine-readable, and it has to admit the PRERELEASE
+  // builds: semver excludes a prerelease unless a comparator in the same set names one, so
+  // `>=0.2.0` would have rejected the 0.2.0-rc.2 this plugin was verified against.
+  assert.equal(manifest.peerDependencies?.['@deepseek-ai/dsh'], '^0.1.7-rc.2 || >=0.2.0-rc.1 <0.2.1-0')
+  // dsh comes from the HOST at runtime; a non-optional peer would make npm/pnpm install a
+  // second copy of it into the consumer's tree and pin it in their lockfile.
+  assert.equal(manifest.peerDependenciesMeta?.['@deepseek-ai/dsh']?.optional, true)
   for (const entry of ['index.js', 'lib', 'cordis.patch.yml']) {
     assert.ok(manifest.files.includes(entry), `\`files\` must include ${entry} (got ${JSON.stringify(manifest.files)})`)
   }
@@ -341,6 +348,13 @@ test('F17: the published package still ships its browser half', async () => {
   // registers, the card never renders, and nothing anywhere reports an error.
   const { readFileSync, existsSync } = await import('node:fs')
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  // The dsh compatibility range has to be machine-readable, and it has to admit the PRERELEASE
+  // builds: semver excludes a prerelease unless a comparator in the same set names one, so
+  // `>=0.2.0` would have rejected the 0.2.0-rc.2 this plugin was verified against.
+  assert.equal(manifest.peerDependencies?.['@deepseek-ai/dsh'], '^0.1.7-rc.2 || >=0.2.0-rc.1 <0.2.1-0')
+  // dsh comes from the HOST at runtime; a non-optional peer would make npm/pnpm install a
+  // second copy of it into the consumer's tree and pin it in their lockfile.
+  assert.equal(manifest.peerDependenciesMeta?.['@deepseek-ai/dsh']?.optional, true)
 
   assert.ok(manifest.dsh.client, '`dsh.client` declares the browser half and must exist')
   assert.equal(manifest.dsh.client.platform, 'web')
