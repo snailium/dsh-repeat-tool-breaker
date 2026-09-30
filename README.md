@@ -5,9 +5,14 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 
-> ### ⚠️ This line requires **dsh >= 0.1.7** (session format 4)
+> ### ⚠️ Supported dsh: `^0.1.7-rc.2 || >=0.2.0-rc.1 <0.2.1-0`
 >
-> **0.8.x is the dsh 0.1.7 line. On dsh 0.1.5, install `dsh-repeat-tool-breaker@0.7`.**
+> **0.8.x covers the dsh 0.1.7 line and dsh 0.2.0 (from rc.1, up to but not including 0.2.1).
+> On dsh 0.1.5, install `dsh-repeat-tool-breaker@0.7`.**
+> The same range is declared as a **peer dependency** on `@deepseek-ai/dsh`, so a resolver can
+> see it; it is marked `optional` because dsh is provided by the host at runtime. Note the
+> `0.2.0-rc.1` lower bound rather than `0.2.0`: semver admits a prerelease only when a
+> comparator in the same set names one, so `>=0.2.0` would reject every 0.2.0 rc.
 > 0.1.7 replaced the settings API, so one build cannot register a settings page on both
 > generations — the two are served by two lines rather than by a version probe.
 >
@@ -283,9 +288,15 @@ permanently nonexistent host — 8 times in a row.
 ## Requirements
 
 - Node.js **>= 20** (developed and tested on 22).
-- **dsh >= 0.1.7 (session format 4).** This is the 0.1.7 line. 0.1.7 removed the imperative
-  settings API and **rejects** the message-source shape that 0.1.5 **requires**, so one build
-  cannot serve both: **use 0.7.x on dsh 0.1.5**, and this release from 0.1.7 onward.
+- **dsh `^0.1.7-rc.2 || >=0.2.0-rc.1 <0.2.1-0`** (session format 4), declared as an
+  `optional` **peer dependency** on `@deepseek-ai/dsh` — optional because the host provides
+  dsh, and a non-optional peer would make npm/pnpm install a second copy into the consumer's
+  tree. The dsh 0.1.7 line and dsh 0.2.0 are both supported and both verified: the Host-half
+  packages this plugin calls (`dsh-tools`, `dsh-web`, `dsh-web-fetch-http`, `dsh-settings`,
+  `dsh-api-settings-controller`) are byte-identical across the two, and the compat suite passes
+  on each. 0.1.7 removed the imperative settings API and **rejects** the message-source shape
+  that 0.1.5 **requires**, so one build cannot serve both generations: **use 0.7.x on dsh
+  0.1.5**.
 - A DSH profile that exposes the `tools` service. The settings page additionally needs the
   **web** surface and a profile that mounts `@deepseek-ai/dsh-client-ui-plugin-manager`.
 - One runtime dependency: **`@deepseek-ai/schemastery` (^3.18.4)** — the exported `Config`
@@ -562,7 +573,11 @@ that isn't yet in the composed tree.)
 ### The settings box (Settings → Plugins)
 
 The knobs an operator is most likely to want mid-session are editable in the Web UI,
-without a restart: open **Settings → Plugins** and expand **Repeat tool breaker**. Seven
+without a restart: open **Settings → Plugins**, and in the **Installed** list open
+**dsh-repeat-tool-breaker** — that package page is where the card lives. (It is deliberately
+*not* in the **Official** list: that list is built from the `plugins.item` slot, which is where
+dsh's own plugins live, so a third-party plugin claiming it would be presented as a shipped
+one.) Seven
 fields — `blockShellHttp`, `blockLocalHttp`, `shellHttpBlock`, `warnAt`, `summarizeAt`,
 `failWarnAt`, `failLimit` — are staged and written on **Save**; a per-field
 `Overridden` badge with a `Reset` stages a clear back to the composition layer. A
@@ -570,9 +585,16 @@ refused write keeps the draft and reports the failure rather than dropping the e
 A saved value takes effect on the next call, without a remount: the namespace is the
 plugin's loader entry id, and the form is derived from the plugin's exported `Config`,
 whose fields are all marked volatile so dsh hands the loader live references rather than
-copies. The change lands in the **managed** settings document (`$DSH_HOME/settings.yaml`),
-which dsh owns — a hand-written file of that name is imported once and renamed
-`settings.yaml.imported`, so edit it through the UI or the profile patch layer instead.
+copies. A saved value lands in the **profile's patch layer** (`cordis.patch.yml` under
+`$DSH_HOME/profiles/web/`, measured), which dsh owns. A hand-written `$DSH_HOME/settings.yaml`
+is imported once and renamed `settings.yaml.imported`, so edit settings through the UI or the
+patch layer instead of writing that file yourself.
+
+The keyed slot's `key` is the **package** name, not the settings namespace, and a wrong value
+fails **silently**: the page's "configured" ledger is built from those entries' `key`, so a
+mismatch leaves the package un-configurable and renders no config section at all, with nothing
+logged. The name is a pinned constant in `lib/client.js`, asserted against `package.json` by
+the test suite so a rename fails there instead of quietly.
 
 This works because the plugin ships **both halves**, which is a requirement rather than
 an implementation detail. The Plugins page renders the *intersection* of two ledgers:
@@ -580,7 +602,7 @@ an implementation detail. The Plugins page renders the *intersection* of two led
 | Half | What it contributes | Where |
 |---|---|---|
 | Host | the settings namespace and its schema | the exported `Config`, read from `entry.fiber.runtime.Config` |
-| Browser | a card claiming `settings.plugin.item` under the SAME key | `ctx.slots.register` in `lib/client.js` |
+| Browser | a card on the **keyed** `plugins.bundle.config` slot, keyed by the **package** name | `ctx.slots.inject` in `lib/client.js` |
 
 the platform hard-codes its own official cards, so a third-party plugin must bring its own.
 Since **dsh 0.1.7** the namespace is the **loader entry id** and the schema comes from the

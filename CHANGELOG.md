@@ -5,6 +5,36 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-09-29
+
+### Added — the dsh compatibility range is machine-readable
+
+The supported range was prose only: the description and the README said "requires dsh >=
+0.1.7" while nothing a resolver reads said so. It is now an `optional` **peer dependency** on
+`@deepseek-ai/dsh`:
+
+```
+^0.1.7-rc.2 || >=0.2.0-rc.1 <0.2.1-0
+```
+
+Two details are load-bearing. The lower bound is `0.2.0-rc.1` and not `0.2.0`, because semver
+admits a prerelease only when a comparator in the same set names one — `>=0.2.0` would reject
+every 0.2.0 rc, including the build this plugin was just verified against. And the peer is
+`optional`, because dsh is provided by the host at runtime: npm 7+ and pnpm 8+ install
+non-optional peers automatically, which would pull a second copy of dsh into a consumer's tree
+and pin it in their lockfile.
+
+A test pins both the range and the optionality.
+
+### Documentation — the README now says what 0.8.5 does
+
+Three statements had gone stale, one of them wrong: the card is on the **package** page in
+**Installed** (not a list item to expand, and deliberately not in **Official**, whose list is
+built from the `plugins.item` slot where dsh's own plugins live); the slot is the keyed
+`plugins.bundle.config` keyed by the **package** name; and a saved value lands in the
+**profile's patch layer**, which is where it was measured, not in the managed settings
+document.
+
 ## [0.8.5] - 2026-09-29
 
 ### Changed — the card no longer appears under Official
@@ -1123,7 +1153,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.5...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.6...HEAD
+[0.8.6]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.2...v0.8.3
