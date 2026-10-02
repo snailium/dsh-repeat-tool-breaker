@@ -446,7 +446,7 @@ test('C14: a served namespace renders the card, collapsed, with the save disable
     discard() {},
   })
   assert.equal(rendered.type, 'SettingsForm', 'the page supplies the frame; this supplies the form')
-  assert.equal(rendered.children.length, 7, 'one field per declared setting, in render order')
+  assert.equal(rendered.children.length, 8, 'one field per declared setting, in render order')
   assert.equal(rendered.children[0].type, 'SettingsValueField')
   assert.equal(rendered.props.state.available, true)
 

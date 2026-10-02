@@ -483,6 +483,44 @@ all.
 - Excluded tools (`exclude`, default `todo_write`; `*`-wildcards supported) are
   fully transparent: they neither count nor reset.
 
+## The fetch tool: `web_fetch_file`
+
+The block refuses a shell fetch and points at this tool, so the two ship together: a refusal that
+names a tool the profile does not have is worse than no refusal. The tool fetches a URL and writes
+the body to a **file**, returning the path plus `statusCode`, `bytes`, `contentType`, `kind` and
+`finalUrl` — never the body, because a fetched document in the context is the cost this tool
+exists to remove.
+
+**It has two backends, and the difference is a risk, not a detail.**
+
+| | `fetchWithCurl: false` (default) | `fetchWithCurl: true` |
+|---|---|---|
+| retrieval | `ctx.web`, the platform's web service | a `curl` subprocess |
+| content types | `text/html`, `text/*`, `application/json|xml`, `*+json`, `*+xml` — **everything else is refused and the body cancelled** | anything: PDFs, images, archives |
+| redirects | same-origin only; a cross-origin hop is refused | followed, cross-origin included |
+| local addresses | refused (the SSRF guard owns that) | reached, loopback and RFC1918 included |
+| cookies | none | one jar per session, so a login carries between fetches |
+| guard | the platform's SSRF validation, per hop | ours: scheme restricted to http/https, optional private-host refusal, size and time caps |
+
+The default is the polite one and it is a real limitation: the platform classifies the response
+and **cancels the body** of anything it does not recognise, so a PDF cannot be fetched at all. The
+curl backend exists because of a measured dead end — session `b623d414`, where the model needed
+two public PDFs and every path failed: this tool returned `unsupported content type
+"application/pdf"` twice, the shell was refused by this plugin's own block, and a text extractor
+had nothing to extract. Three calls, nothing produced. A steering block that leads to a dead end
+is worse than no block.
+
+Turning it on is a decision about **what the model may reach**, so it is off by default and it is
+labelled in the UI. What the curl backend still refuses: any scheme other than http or https (it
+will not read `file:///etc/passwd`), anything the URL looks like as an option (`--` precedes the
+URL, and nothing is ever interpolated into a shell), and — with `allowPrivateHosts: false` — any
+host that resolves to loopback, link-local or RFC1918. It is a subprocess with a fixed argv, not a
+shell.
+
+Both backends keep the property the block depends on: the outcome is a **fact** in the tool's
+structured output. A piped `curl -o /dev/null` reports nothing; this reports the status, the byte
+count, the content type and where the file went.
+
 ## Configuration
 
 Mount via a profile bundle (Option A above — no `config:` in the bundle layer,
@@ -501,7 +539,13 @@ at which point `ctx.tools.guard` is the genuine method.
         localHosts: deny            # deny | allow — see "Local addresses"
         # Refuse HTTP made from the shell; send the model to web_fetch_file instead.
         blockShellHttp: true        # refuse a shell call that fetches over HTTP; fail-safe (no-op without the tool)
-        blockLocalHttp: false       # local addresses stay in the shell — the fetch tool cannot reach them
+        blockLocalHttp: false       # local addresses stay in the shell; they are ordinary work
+        # Which backend web_fetch_file retrieves with. Off: the platform web service — text only,
+        # no cross-origin redirects, no loopback or RFC1918. On: curl — ANY content type (so PDFs
+        # and images can be downloaded at all), redirects anywhere, a per-session cookie jar, and
+        # whatever the shell can reach, loopback included. See "The fetch tool" below before
+        # turning it on: it decides what the MODEL may reach, not just what this plugin does.
+        fetchWithCurl: false
         shellHttpBlock:             # the verbs the block REFUSES; `[]` switches the block off entirely
           - curl
           - wget
@@ -509,9 +553,16 @@ at which point `ctx.tools.guard` is the genuine method.
           # the short HTTPie name is deliberately NOT a default: as a segment's first token it
           # is almost always data (a status write-out format string, a JSON scheme value), and a
           # refusal there has no address to exempt. Add it back here if you want it.
-        # web_fetch_file — registered only when the profile has ctx.web
+        # web_fetch_file — always registered; `blockShellHttp` only fires when it can FETCH,
+        # which means the curl backend is on or the profile actually mounts ctx.web.
         outputDir: fetched          # relative to the workspace root; /tmp does NOT survive between shell calls
-        maxBytes: 8388608           # our own cap; the web provider caps first
+        maxBytes: 8388608           # the cap: --max-filesize for curl, our own clip for the provider
+        # curl backend only, all optional:
+        timeoutMs: 30000            # --max-time, whole transfer
+        maxRedirects: 5             # --max-redirs; cross-origin hops ARE followed
+        allowPrivateHosts: true     # false resolves the host and refuses loopback/RFC1918
+        cookieJar: true             # one jar per SESSION, so a login carries between fetches
+        curlPath: curl              # the binary; a missing one is reported, not ignored
         warnAt: 7                   # occurrence stage 1; 0 / negative / null disables it
         summarizeAt: 11             # occurrence stage 2; 0 / negative / null disables it
         failWarnAt: 3               # failure stage 1; same off-switch as `warnAt`

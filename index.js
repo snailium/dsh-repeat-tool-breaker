@@ -174,7 +174,21 @@ export const Config = z.object({
   blockLocalHttp: z
     .boolean()
     .default(DEFAULTS.blockLocalHttp)
-    .description('Also refuse local (loopback/RFC1918) fetches. Off because web_fetch_file cannot reach them.')
+    .description(
+      'Also refuse local (loopback/RFC1918) fetches. Off by default: a local fetch is ordinary ' +
+        'work, and `web_fetch_file` can reach local addresses itself when `fetchWithCurl` is on.',
+    )
+    .volatile(),
+  fetchWithCurl: z
+    .boolean()
+    .default(DEFAULTS.fetchWithCurl)
+    .description(
+      'Fetch with curl instead of the platform web service. RISK: curl saves ANY content type ' +
+        '(PDFs, images, archives), follows redirects off-origin, shares cookies between fetches of ' +
+        'one session, and reaches whatever the shell can reach — loopback and RFC1918 included. ' +
+        'Off by default: the platform backend is text-only and cannot reach private addresses, ' +
+        'which is what keeps a fetch tool from being a general HTTP client.',
+    )
     .volatile(),
   shellHttpBlock: z
     .array(z.string())
@@ -487,11 +501,25 @@ export function apply(ctx, config = {}) {
   // written back onto `cfg`, which is what makes it LIVE: `stageAdvisory` and the
   // tracker both read `cfg` at call time, so a change in the UI applies to the next
   // call without touching either of them.
-  // `web_fetch_file` is registered only when the profile actually has the web
-  // service. It is the replacement a denial points at, so the guard must know
-  // whether it exists -- naming a tool a profile does not have is worse than
-  // naming nothing.
-  registerFetchFileTool(ctx, { outputDir: cfg.outputDir, maxBytes: cfg.maxBytes }, fetchFile)
+  // `web_fetch_file` is the replacement a denial points at, so the guard must know whether it
+  // can actually FETCH -- naming a tool a profile does not have is worse than naming nothing. The
+  // tool registers either way, but the flag the guard reads means capability: true when curl is
+  // the backend, and set when the web service arrives for the default backend.
+  registerFetchFileTool(
+    ctx,
+    {
+      fetchWithCurl: cfg.fetchWithCurl,
+      outputDir: cfg.outputDir,
+      maxBytes: cfg.maxBytes,
+      timeoutMs: cfg.timeoutMs,
+      maxRedirects: cfg.maxRedirects,
+      userAgent: cfg.userAgent,
+      allowPrivateHosts: cfg.allowPrivateHosts,
+      cookieJar: cfg.cookieJar,
+      curlPath: cfg.curlPath,
+    },
+    fetchFile,
+  )
 
   const disposeGuard = ctx.tools.guard(guard)
   if (typeof disposeGuard === 'function') teardown.push(disposeGuard)

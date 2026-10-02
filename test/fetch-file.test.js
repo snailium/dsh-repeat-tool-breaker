@@ -9,7 +9,9 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { createServer } from 'node:http'
+import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -104,8 +106,8 @@ test('F6: the body goes to a file, and only the path comes back', async () => {
   try {
     const body = `<html><body>${'x'.repeat(500)}</body></html>`
     const execute = makeFetchFileExecute({
-      web: fakeWeb({ statusCode: 200, body, kind: 'html' }),
       ctx: fakeCtx(),
+      resolveWeb: () => fakeWeb({ statusCode: 200, body, kind: 'html' }),
       settings: { ...FETCH_FILE_DEFAULTS, outputDir: dir },
     })
     const value = await execute({ url: 'https://example.com/page' }, {})
@@ -123,8 +125,8 @@ test('F7: a 404 is a FACT in the returned value, not a guess', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'ff-'))
   try {
     const execute = makeFetchFileExecute({
-      web: fakeWeb({ statusCode: 404, body: 'not found', kind: 'html' }),
       ctx: fakeCtx(),
+      resolveWeb: () => fakeWeb({ statusCode: 404, body: 'not found', kind: 'html' }),
       settings: { ...FETCH_FILE_DEFAULTS, outputDir: dir },
     })
     const value = await execute({ url: 'https://example.com/gone' }, {})
@@ -141,8 +143,8 @@ test('F8: an over-large body is clipped and reported as truncated', async () => 
   const dir = await mkdtemp(join(tmpdir(), 'ff-'))
   try {
     const execute = makeFetchFileExecute({
-      web: fakeWeb({ statusCode: 200, body: 'y'.repeat(1000) }),
       ctx: fakeCtx(),
+      resolveWeb: () => fakeWeb({ statusCode: 200, body: 'y'.repeat(1000) }),
       settings: { ...FETCH_FILE_DEFAULTS, outputDir: dir, maxBytes: 100 },
     })
     const value = await execute({ url: 'https://example.com/big' }, {})
@@ -158,7 +160,7 @@ test('F9: the model-chosen path is honoured, and still confined', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'ff-'))
   try {
     const settings = { ...FETCH_FILE_DEFAULTS, outputDir: dir }
-    const execute = makeFetchFileExecute({ web: fakeWeb({ body: 'x' }), ctx: fakeCtx(), settings })
+    const execute = makeFetchFileExecute({ ctx: fakeCtx(), settings, resolveWeb: () => fakeWeb({ body: 'x' }) })
     const value = await execute({ url: 'https://example.com/', path: 'nested/here.txt' }, {})
     assert.ok(value.path.endsWith('nested/here.txt'), value.path)
     await assert.rejects(
@@ -182,15 +184,18 @@ test('F10: a missing url is rejected before any request', async () => {
 })
 
 test('F11: the tool registers when a web service exists, and stays away when not', () => {
-  // A profile WITH the service: `inject` fires and the tool appears.
+  // Registration does NOT wait for `ctx.web` any more. The curl backend needs no such service,
+  // and the guard only blocks shell HTTP while this tool is registered — so registering late
+  // would strand a profile whose whole point is to fetch with curl.
   const registered = []
   const withWeb = {
     inject: (deps, callback) => {
       assert.deepEqual(deps, ['web'])
-      callback({ web: { fetch: async () => ({}) }, tools: { register: (def) => registered.push(def) } })
+      callback({ web: { fetch: async () => ({}) } })
       return () => {}
     },
     get: () => undefined,
+    tools: { register: (def) => registered.push(def) },
   }
   fetchFileToolState.registered = false
   registerFetchFileTool(withWeb, FETCH_FILE_DEFAULTS)
@@ -204,14 +209,31 @@ test('F11: the tool registers when a web service exists, and stays away when not
   assert.equal(registered[0].output.schema.additionalProperties, false)
   assert.equal(typeof registered[0].output.render, 'function')
 
-  // A profile WITHOUT the service: nothing registers, and the guard can see that.
+  // A context with no scoped `inject` at all (a test double) still gets the TOOL registered —
+  // the backend that needs no service is the point — but `registered`, the flag the guard reads,
+  // stays FALSE: with the default backend and no web service the tool cannot fetch anything, and
+  // pointing a denial at it would strand the network. Capability, not existence.
+  const bare = []
   fetchFileToolState.registered = false
-  registerFetchFileTool({ inject: () => () => {}, get: () => undefined }, FETCH_FILE_DEFAULTS)
-  assert.equal(fetchFileToolState.registered, false)
+  assert.doesNotThrow(() =>
+    registerFetchFileTool({ get: () => undefined, tools: { register: (def) => bare.push(def) } }, FETCH_FILE_DEFAULTS),
+  )
+  assert.equal(fetchFileToolState.registered, false, 'no web service and no curl is NOT capability')
+  assert.equal(bare.length, 1, 'the tool definition is still registered, it just cannot fetch yet')
 
-  // A context with no scoped `inject` at all (a test double) must not throw.
+  // With curl as the backend, capability does not depend on any service.
+  const curlOnly = []
   fetchFileToolState.registered = false
-  assert.doesNotThrow(() => registerFetchFileTool({ get: () => undefined }, FETCH_FILE_DEFAULTS))
+  registerFetchFileTool(
+    { get: () => undefined, tools: { register: (def) => curlOnly.push(def) } },
+    { ...FETCH_FILE_DEFAULTS, fetchWithCurl: true },
+  )
+  assert.equal(fetchFileToolState.registered, true, 'the curl backend needs no web service')
+
+  // A context with NO tool registry registers nothing, and the guard can see that. That is the
+  // fail-safe: no replacement tool means the block must not run.
+  fetchFileToolState.registered = false
+  assert.doesNotThrow(() => registerFetchFileTool({ inject: () => () => {}, get: () => undefined }, FETCH_FILE_DEFAULTS))
   assert.equal(fetchFileToolState.registered, false)
 })
 
@@ -222,10 +244,11 @@ test('F12: the rendering never contains the body', async () => {
   registerFetchFileTool(
     {
       inject: (_deps, cb) => {
-        cb({ web: { fetch: async () => ({}) }, tools: { register: (def) => registered.push(def) } })
+        cb({ web: { fetch: async () => ({}) } })
         return () => {}
       },
       get: () => undefined,
+      tools: { register: (def) => registered.push(def) },
     },
     FETCH_FILE_DEFAULTS,
   )
@@ -244,10 +267,19 @@ test('F12: the rendering never contains the body', async () => {
 })
 
 test('F13: fetch-file settings are validated fail-loud', () => {
-  assert.throws(() => validateFetchFileCfg({ outputDir: '', maxBytes: 10 }), /outputDir/)
-  assert.throws(() => validateFetchFileCfg({ outputDir: 'x', maxBytes: 0 }), /maxBytes/)
-  assert.throws(() => validateFetchFileCfg({ outputDir: 'x', maxBytes: 1.5 }), /maxBytes/)
-  assert.doesNotThrow(() => validateFetchFileCfg({ outputDir: 'fetched', maxBytes: 1024 }))
+  const base = { ...FETCH_FILE_DEFAULTS }
+  assert.throws(() => validateFetchFileCfg({ ...base, outputDir: '' }), /outputDir/)
+  assert.throws(() => validateFetchFileCfg({ ...base, maxBytes: 0 }), /maxBytes/)
+  assert.throws(() => validateFetchFileCfg({ ...base, maxBytes: 1.5 }), /maxBytes/)
+  // The curl backend's own knobs, which the backend will otherwise pass to curl unchecked.
+  assert.throws(() => validateFetchFileCfg({ ...base, fetchWithCurl: 'yes' }), /fetchWithCurl/)
+  assert.throws(() => validateFetchFileCfg({ ...base, allowPrivateHosts: 'no' }), /allowPrivateHosts/)
+  assert.throws(() => validateFetchFileCfg({ ...base, cookieJar: 'no' }), /cookieJar/)
+  assert.throws(() => validateFetchFileCfg({ ...base, timeoutMs: 0 }), /timeoutMs/)
+  assert.throws(() => validateFetchFileCfg({ ...base, maxRedirects: 0 }), /maxRedirects/)
+  assert.throws(() => validateFetchFileCfg({ ...base, curlPath: '' }), /curlPath/)
+  assert.throws(() => validateFetchFileCfg({ ...base, userAgent: '' }), /userAgent/)
+  assert.doesNotThrow(() => validateFetchFileCfg({ ...base, outputDir: 'fetched', maxBytes: 1024 }))
 })
 
 // ---------------------------------------------------------------------------
@@ -300,7 +332,7 @@ test('F14: the exported Config IS the settings schema, and every field is volati
   const fields = Object.keys(Config.dict ?? {})
   assert.deepEqual(
     [...fields].sort(),
-    ['blockLocalHttp', 'blockShellHttp', 'failLimit', 'failWarnAt', 'shellHttpBlock', 'summarizeAt', 'warnAt'],
+    ['blockLocalHttp', 'blockShellHttp', 'failLimit', 'failWarnAt', 'fetchWithCurl', 'shellHttpBlock', 'summarizeAt', 'warnAt'],
   )
   for (const field of fields) {
     assert.equal(Config.dict[field].meta?.volatile, true, `${field} must be volatile or the form skips it`)
@@ -387,4 +419,181 @@ test('F17: the published package still ships its browser half', async () => {
     ['@deepseek-ai/dsh-client-ui-primitives', 'react'],
     'the module table surface must stay at react and the shared form components',
   )
+})
+
+
+// ---------------------------------------------------------------------------
+// the curl backend (`fetchWithCurl: true`)
+// ---------------------------------------------------------------------------
+
+const hasCurl = spawnSync('curl', ['--version'], { stdio: 'ignore' }).status === 0
+const skipCurl = hasCurl ? false : 'curl is not installed in this environment'
+
+/** Run one throwaway HTTP server on loopback, and hand the caller its base URL. */
+async function withServer(handler, run) {
+  const server = createServer(handler)
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  try {
+    return await run(`http://127.0.0.1:${port}`)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+}
+
+/** An execute bound to the curl backend, writing into `dir`. */
+const curlExecute = (dir, extra = {}) =>
+  makeFetchFileExecute({
+    ctx: fakeCtx(),
+    settings: { ...FETCH_FILE_DEFAULTS, fetchWithCurl: true, outputDir: dir, ...extra },
+  })
+
+/** One session's execution context, which is what names the cookie jar. */
+const session = (id) => ({ agent: { session: { header: { id } } } })
+
+test('F20: a binary body is saved byte-for-byte, and named from its content type', { skip: skipCurl }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ff-'))
+  try {
+    // A real PDF header followed by bytes that are NOT valid UTF-8: the platform backend refuses
+    // this outright, which is the whole reason the curl backend exists.
+    const body = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from([0x00, 0xff, 0xfe, 0x01, 0x80, 0x7f])])
+    await withServer(
+      (_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/pdf' })
+        res.end(body)
+      },
+      async (base) => {
+        const value = await curlExecute(dir)({ url: `${base}/doc` }, session('bin'))
+        assert.equal(value.statusCode, 200)
+        assert.equal(value.contentType, 'application/pdf')
+        assert.equal(value.kind, 'pdf')
+        assert.equal(value.bytes, body.length)
+        assert.ok(value.path.endsWith('.pdf'), `expected a .pdf name, got ${value.path}`)
+        assert.deepEqual(await readFile(value.path), body, 'the bytes must survive unchanged')
+      },
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('F21: cookies are shared inside one session and not across sessions', { skip: skipCurl }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ff-'))
+  try {
+    await withServer(
+      (req, res) => {
+        if (req.url === '/set') {
+          res.writeHead(200, { 'content-type': 'text/plain', 'set-cookie': 'token=abc123; Path=/' })
+          res.end('set')
+          return
+        }
+        const carried = /token=abc123/.test(req.headers.cookie ?? '')
+        res.writeHead(200, { 'content-type': 'text/plain' })
+        res.end(carried ? 'carried' : 'absent')
+      },
+      async (base) => {
+        const execute = curlExecute(dir)
+        const first = await execute({ url: `${base}/set` }, session('sess-a'))
+        assert.equal(await readFile(first.path, 'utf8'), 'set')
+        // Same session: the jar was written by the first call and is sent by the second.
+        const second = await execute({ url: `${base}/check` }, session('sess-a'))
+        assert.equal(await readFile(second.path, 'utf8'), 'carried')
+        // A different session must not inherit it.
+        const other = await execute({ url: `${base}/check` }, session('sess-b'))
+        assert.equal(await readFile(other.path, 'utf8'), 'absent')
+        // With the jar off, even the same session carries nothing.
+        const noJar = curlExecute(dir, { cookieJar: false })
+        const third = await noJar({ url: `${base}/check` }, session('sess-a'))
+        assert.equal(await readFile(third.path, 'utf8'), 'absent')
+      },
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('F22: a redirect is followed, and the effective URL is reported', { skip: skipCurl }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ff-'))
+  try {
+    await withServer(
+      (req, res) => {
+        if (req.url === '/from') {
+          res.writeHead(302, { location: '/to' })
+          res.end()
+          return
+        }
+        res.writeHead(200, { 'content-type': 'text/plain' })
+        res.end('landed')
+      },
+      async (base) => {
+        const value = await curlExecute(dir)({ url: `${base}/from` }, session('redir'))
+        assert.equal(value.statusCode, 200)
+        assert.ok(value.finalUrl.endsWith('/to'), `finalUrl should be the redirect target: ${value.finalUrl}`)
+        assert.equal(await readFile(value.path, 'utf8'), 'landed')
+        // The name comes from the EFFECTIVE url, not the one asked for.
+        assert.ok(value.path.includes('-to'), `expected the effective path in the name: ${value.path}`)
+      },
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('F23: an HTTP error is a STATUS, and the body is still saved', { skip: skipCurl }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ff-'))
+  try {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(404, { 'content-type': 'text/html' })
+        res.end('<html><body>not found</body></html>')
+      },
+      async (base) => {
+        const value = await curlExecute(dir)({ url: `${base}/missing` }, session('404'))
+        assert.equal(value.statusCode, 404, 'a 404 is a fact in the value, not an exception')
+        assert.equal(value.kind, 'html')
+        assert.ok((await readFile(value.path, 'utf8')).includes('not found'))
+      },
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('F24: a refused transfer leaves no half file behind', { skip: skipCurl }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ff-'))
+  try {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/octet-stream' })
+        res.end(Buffer.alloc(4096, 7))
+      },
+      async (base) => {
+        const execute = curlExecute(dir, { maxBytes: 1024 })
+        await assert.rejects(() => execute({ url: `${base}/big` }, session('big')), /maxBytes|curl exited 63/)
+        const left = await readdir(dir)
+        assert.deepEqual(left, [], `a failed download must leave nothing: ${left.join(', ')}`)
+      },
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('F25: a non-http scheme and a private host are both refused before curl runs', { skip: skipCurl }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ff-'))
+  try {
+    const execute = curlExecute(dir)
+    // `file:` is the reason the scheme is checked at all: curl speaks it, and a fetch tool that
+    // can read local files is a filesystem-read primitive.
+    await assert.rejects(() => execute({ url: 'file:///etc/passwd' }, session('scheme')), /only http and https/)
+    // The private-host policy is opt-out, and it refuses loopback too.
+    const strict = curlExecute(dir, { allowPrivateHosts: false })
+    await assert.rejects(
+      () => strict({ url: 'http://127.0.0.1:9/x' }, session('strict')),
+      /local address|private address/,
+    )
+    assert.deepEqual(await readdir(dir), [], 'nothing may be written for a refused target')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })

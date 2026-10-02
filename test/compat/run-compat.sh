@@ -73,6 +73,18 @@ run_scenario() {
   start_mock "$@"
   echo "=== $label ==="
   rm -rf "$COMPAT_HOME/sessions"
+  # Restore the base patch, then append this scenario's extension when it gave one. A scenario
+  # that turns on the curl backend must not change what the NEXT scenario's backend is.
+  cp "$COMPAT_HOME/probe-patch-base.yml" "$COMPAT_HOME/profiles/probe/cordis.patch.yml"
+  # dsh IMPORTS a hand-written settings.yaml once and renames it to settings.yaml.imported, so the
+  # mock provider it declares exists for the FIRST scenario only. Measured here: scenario 2 died on
+  # `NO_ADAPTER: no adapter registered for provider "mock"`. Put the file back and clear the marker
+  # so each scenario imports it afresh.
+  cp "$COMPAT_HOME/probe-settings-base.yaml" "$COMPAT_HOME/settings.yaml"
+  rm -f "$COMPAT_HOME/settings.yaml.imported"
+  if [[ -n "${EXTRA_PATCH:-}" ]]; then
+    printf '%s\n' "$EXTRA_PATCH" >> "$COMPAT_HOME/profiles/probe/cordis.patch.yml"
+  fi
   DSH_HOME="$COMPAT_HOME" MOCK_API_KEY=mock timeout 600 "$DSH_BIN" --profile probe "compat check" 2>&1 | tail -3
   COMPAT_HOME="$COMPAT_HOME" EXPECT_EXECUTED="$expected_executed" EXPECT_TOTAL="$expected_total" \
     LABEL="$label" EXPECT_ADVISORY="${EXPECT_ADVISORY:-}" EXPECT_DENIAL="${EXPECT_DENIAL:-}" \
@@ -219,6 +231,11 @@ YAML
 
 ( cd "$COMPAT_HOME/profiles/probe" && npm install --no-audit --no-fund --loglevel=error "$PLUGIN_SPEC" >/dev/null )
 
+# The base patch and the home settings, kept aside so a scenario can add to one without
+# leaking into the next one.
+cp "$COMPAT_HOME/profiles/probe/cordis.patch.yml" "$COMPAT_HOME/probe-patch-base.yml"
+cp "$COMPAT_HOME/settings.yaml" "$COMPAT_HOME/probe-settings-base.yaml"
+
 echo "=== bundle mounts? ==="
 if ! DSH_HOME="$COMPAT_HOME" "$DSH_BIN" --profile probe --dump-config 2>&1 | grep -q "dsh-repeat-tool-breaker"; then
   echo "FAIL: the bundle did not mount" >&2
@@ -311,6 +328,25 @@ if getent hosts example.com >/dev/null 2>&1; then
     MOCK_REPEATS=1 MOCK_TOOL=web_fetch_file MOCK_TOOL_ARGS="{\"url\": \"https://example.com/\"}"
 else
   echo "  SKIPPED: no DNS for example.com, so the successful-fetch half cannot run here"
+fi
+
+# Scenario 7 — a PUBLIC PDF with the curl backend on. This is the case the backend exists for:
+# the platform service refuses `application/pdf` (and cancels the body) while this plugin's own
+# block refuses the shell, so before `fetchWithCurl` the pair left no way to download a binary at
+# all. A `.pdf` on disk with a byte count is the whole assertion.
+#
+# The URL is the W3C's long-standing dummy PDF: public, tiny, stable, and nothing to do with
+# anyone's data. Gated on DNS so the suite never fails merely for lack of a network.
+echo "=== a public PDF, with the curl backend ==="
+if getent hosts www.w3.org >/dev/null 2>&1; then
+  PDF_URL="https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
+  rm -rf "$PWD/fetched"
+  EXTRA_PATCH=$'- id: repeat-tool-breaker\n  config:\n    fetchWithCurl: true' \
+  EXPECT_TEXT='Fetched (HTTP 200)' EXPECT_FILE="$PWD/fetched/**/*.pdf" \
+    run_scenario "a public PDF lands as a .pdf file" 1 1 \
+    MOCK_REPEATS=1 MOCK_TOOL=web_fetch_file MOCK_TOOL_ARGS="{\"url\": \"$PDF_URL\"}"
+else
+  echo "  SKIPPED: no DNS for www.w3.org, so the PDF half cannot run here"
 fi
 
 echo "COMPAT: PASS"

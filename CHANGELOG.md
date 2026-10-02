@@ -5,6 +5,56 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-29
+
+### Added — `web_fetch_file` can download binaries, behind a switch that states the risk
+
+The tool retrieved with `ctx.web`, the platform's web service, which is built for reading: it
+classifies the response and **cancels the body** of anything that is not text
+(`text/html`, `text/*`, `application/json|xml`, `*+json`, `*+xml` — everything else becomes
+`WEB_UNSUPPORTED_CONTENT_TYPE`), and it refuses a cross-origin redirect. Measured on session
+`b623d414`, where the model needed two public PDFs: this tool answered `unsupported content type
+"application/pdf"` twice, the shell was refused by this plugin's own block, and a text extractor
+had nothing to extract. Three calls, nothing produced — a steering block that leads to a dead end
+is worse than no block.
+
+`fetchWithCurl` (Settings → Plugins, and the patch layer) now selects the retrieval backend:
+
+- **off (default)** — unchanged: the platform service, its SSRF guard, its redirect policy, its
+  caps, text only.
+- **on** — a `curl` subprocess: ANY content type, redirects followed cross-origin, a per-session
+  cookie jar (0600, under the OS temp directory), and whatever the shell can reach, loopback and
+  RFC1918 included.
+
+The boundaries that stay, whatever the backend: http and https only (`curl` speaks `file:` and
+`scp:`, and a fetch tool that reads local files is not a fetch tool), a fixed argv with `--` before
+the URL and no shell anywhere, `--max-filesize` / `--max-time` / `--max-redirs` caps, no half file
+left behind when a transfer fails, and an optional `allowPrivateHosts: false` that resolves the
+host and refuses loopback, link-local and RFC1918 answers.
+
+### Changed — the guard's fail-safe now means CAPABILITY, not "a tool definition exists"
+
+`web_fetch_file` registers in every profile (the curl backend needs no web service), so the flag
+the guard reads before blocking shell HTTP is set by what can actually fetch: true when curl is the
+backend, and set when the `web` service arrives for the default backend. A profile with neither
+keeps its shell HTTP, because pointing a denial at a tool that cannot fetch is a lost capability,
+not a redirect.
+
+### Verified
+
+- 129 unit tests, including six that drive a real local HTTP server through a real curl: bytes
+  identical on disk for a binary body, a cookie carried inside one session and not across
+  sessions, a redirect followed with the effective URL reported, a 404 reported as a status with
+  the body saved, an oversized transfer refused with nothing left behind, `file://` and a private
+  host both refused before curl runs.
+- The compat suite gained a seventh scenario that downloads a **real public PDF** with the curl
+  backend on, and asserts a `.pdf` on disk with a byte count — the case that motivated the
+  feature, reproducible.
+- The suite itself was fixed on the way: it wrote the home `settings.yaml` once, and dsh imports
+  and RENAMES that file, so the mock provider existed for the first scenario only and every later
+  one died on `NO_ADAPTER`. Both the settings and the patch are now restored per scenario.
+
+
 ## [0.8.7] - 2026-09-29
 
 ### Fixed — two false positives while verifying the relay against the LOCAL dsh API
@@ -1195,7 +1245,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.7...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.7...v0.9.0
 [0.8.7]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.4...v0.8.5
