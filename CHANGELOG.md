@@ -5,6 +5,43 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-29
+
+### Changed — curl is the DEFAULT fetch backend
+
+`web_fetch_file` now retrieves with `curl` unless `fetchWithCurl` is turned off. The switch and its
+label stay; only the default moves.
+
+It moves because the platform backend is not merely stricter, it dead-ends: it classifies the
+response and cancels the body of anything that is not text, so a PDF is unfetchable rather than
+merely discouraged, and this plugin's own block refuses the shell route at the same time. Measured
+in session `b623d414`: three calls, nothing produced. A fetch tool whose default cannot download is
+a fetch tool that lies about what it is for.
+
+What the default now allows, stated plainly because it is a posture and not a preference: any
+content type, redirects followed cross-origin, a per-session cookie jar (0600, under the OS temp
+directory), and whatever the shell can reach — loopback and RFC1918 included. Set
+`fetchWithCurl: false` to put the tool back behind the platform's SSRF guard: text only,
+same-origin redirects only, no private addresses.
+
+Unchanged either way: http and https are the only schemes (no `file://`), the subprocess gets a
+fixed argv with `--` before the URL and no shell, `--max-filesize` / `--max-time` / `--max-redirs`
+caps apply, a failed transfer leaves no half file, and `allowPrivateHosts: false` still refuses
+loopback, link-local and RFC1918 after resolving the host.
+
+### Tests
+
+- The five seam-backend sites say `fetchWithCurl: false` explicitly. They were built from the
+  defaults, so flipping the default had silently moved them onto curl — where they fetched real
+  URLs and passed for the wrong reason. Explicitness, not a looser assertion.
+- T50 is now about CAPABILITY rather than about which service a profile mounts: a bare profile has
+  the curl default and therefore blocks shell HTTP, while `fetchWithCurl: false` with no web
+  service still keeps it.
+- The compat suite's SSRF-guard scenario asks for the platform backend by name (with curl it would
+  fetch the loopback URL), and the public-PDF scenario carries NO patch — it is the assertion that
+  the default can download a PDF, and it fails if a later release flips the default back.
+
+
 ## [0.9.0] - 2026-09-29
 
 ### Added — `web_fetch_file` can download binaries, behind a switch that states the risk
@@ -1245,7 +1282,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.7...v0.9.0
 [0.8.7]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.5...v0.8.6

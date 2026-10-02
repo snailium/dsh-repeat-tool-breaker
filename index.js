@@ -176,18 +176,20 @@ export const Config = z.object({
     .default(DEFAULTS.blockLocalHttp)
     .description(
       'Also refuse local (loopback/RFC1918) fetches. Off by default: a local fetch is ordinary ' +
-        'work, and `web_fetch_file` can reach local addresses itself when `fetchWithCurl` is on.',
+        'work, and with the default curl backend `web_fetch_file` reaches local addresses too, so ' +
+        'the block would only remove the shell route to something the tool already allows.',
     )
     .volatile(),
   fetchWithCurl: z
     .boolean()
     .default(DEFAULTS.fetchWithCurl)
     .description(
-      'Fetch with curl instead of the platform web service. RISK: curl saves ANY content type ' +
-        '(PDFs, images, archives), follows redirects off-origin, shares cookies between fetches of ' +
-        'one session, and reaches whatever the shell can reach — loopback and RFC1918 included. ' +
-        'Off by default: the platform backend is text-only and cannot reach private addresses, ' +
-        'which is what keeps a fetch tool from being a general HTTP client.',
+      'Fetch with curl instead of the platform web service. ON by default, and the RISK is why ' +
+        'this switch is worth knowing about: curl saves ANY content type (PDFs, images, archives), ' +
+        'follows redirects off-origin, shares cookies between fetches of one session, and reaches ' +
+        'whatever the shell can reach — loopback and RFC1918 included. Turn it OFF to keep the ' +
+        'tool text-only, unable to follow a cross-origin redirect, and unable to touch private ' +
+        'addresses.',
     )
     .volatile(),
   shellHttpBlock: z

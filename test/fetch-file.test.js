@@ -108,7 +108,7 @@ test('F6: the body goes to a file, and only the path comes back', async () => {
     const execute = makeFetchFileExecute({
       ctx: fakeCtx(),
       resolveWeb: () => fakeWeb({ statusCode: 200, body, kind: 'html' }),
-      settings: { ...FETCH_FILE_DEFAULTS, outputDir: dir },
+      settings: { ...FETCH_FILE_DEFAULTS, fetchWithCurl: false, outputDir: dir },
     })
     const value = await execute({ url: 'https://example.com/page' }, {})
 
@@ -127,7 +127,7 @@ test('F7: a 404 is a FACT in the returned value, not a guess', async () => {
     const execute = makeFetchFileExecute({
       ctx: fakeCtx(),
       resolveWeb: () => fakeWeb({ statusCode: 404, body: 'not found', kind: 'html' }),
-      settings: { ...FETCH_FILE_DEFAULTS, outputDir: dir },
+      settings: { ...FETCH_FILE_DEFAULTS, fetchWithCurl: false, outputDir: dir },
     })
     const value = await execute({ url: 'https://example.com/gone' }, {})
     // The whole reason the tool exists: the status is the tool's own structured
@@ -145,7 +145,7 @@ test('F8: an over-large body is clipped and reported as truncated', async () => 
     const execute = makeFetchFileExecute({
       ctx: fakeCtx(),
       resolveWeb: () => fakeWeb({ statusCode: 200, body: 'y'.repeat(1000) }),
-      settings: { ...FETCH_FILE_DEFAULTS, outputDir: dir, maxBytes: 100 },
+      settings: { ...FETCH_FILE_DEFAULTS, fetchWithCurl: false, outputDir: dir, maxBytes: 100 },
     })
     const value = await execute({ url: 'https://example.com/big' }, {})
     assert.equal(value.bytes, 100)
@@ -159,7 +159,7 @@ test('F8: an over-large body is clipped and reported as truncated', async () => 
 test('F9: the model-chosen path is honoured, and still confined', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'ff-'))
   try {
-    const settings = { ...FETCH_FILE_DEFAULTS, outputDir: dir }
+    const settings = { ...FETCH_FILE_DEFAULTS, fetchWithCurl: false, outputDir: dir }
     const execute = makeFetchFileExecute({ ctx: fakeCtx(), settings, resolveWeb: () => fakeWeb({ body: 'x' }) })
     const value = await execute({ url: 'https://example.com/', path: 'nested/here.txt' }, {})
     assert.ok(value.path.endsWith('nested/here.txt'), value.path)
@@ -177,7 +177,7 @@ test('F10: a missing url is rejected before any request', async () => {
   const execute = makeFetchFileExecute({
     web: fakeWeb({ impl: async () => { called = true; return {} } }),
     ctx: fakeCtx(),
-    settings: { ...FETCH_FILE_DEFAULTS, outputDir: '/tmp' },
+    settings: { ...FETCH_FILE_DEFAULTS, fetchWithCurl: false, outputDir: '/tmp' },
   })
   await assert.rejects(() => execute({}, {}), /`url` must be a non-empty string/)
   assert.equal(called, false, 'no request for an empty url')
@@ -209,26 +209,28 @@ test('F11: the tool registers when a web service exists, and stays away when not
   assert.equal(registered[0].output.schema.additionalProperties, false)
   assert.equal(typeof registered[0].output.render, 'function')
 
-  // A context with no scoped `inject` at all (a test double) still gets the TOOL registered —
-  // the backend that needs no service is the point — but `registered`, the flag the guard reads,
-  // stays FALSE: with the default backend and no web service the tool cannot fetch anything, and
-  // pointing a denial at it would strand the network. Capability, not existence.
+  // A context with no scoped `inject` at all (a test double) still gets the TOOL registered, and
+  // with curl as the DEFAULT it is also CAPABILITY: no web service is needed, so the guard may
+  // block shell HTTP and point at it.
   const bare = []
   fetchFileToolState.registered = false
   assert.doesNotThrow(() =>
     registerFetchFileTool({ get: () => undefined, tools: { register: (def) => bare.push(def) } }, FETCH_FILE_DEFAULTS),
   )
-  assert.equal(fetchFileToolState.registered, false, 'no web service and no curl is NOT capability')
-  assert.equal(bare.length, 1, 'the tool definition is still registered, it just cannot fetch yet')
+  assert.equal(bare.length, 1)
+  assert.equal(fetchFileToolState.registered, true, 'the curl default needs no web service')
 
-  // With curl as the backend, capability does not depend on any service.
-  const curlOnly = []
+  // …and ONLY the curl backend gives capability without a service. With `fetchWithCurl: false`
+  // and no web service there is a tool that cannot fetch, so the flag stays false — capability,
+  // not existence. That is the fail-safe the guard reads.
+  const seamOnly = []
   fetchFileToolState.registered = false
   registerFetchFileTool(
-    { get: () => undefined, tools: { register: (def) => curlOnly.push(def) } },
-    { ...FETCH_FILE_DEFAULTS, fetchWithCurl: true },
+    { get: () => undefined, tools: { register: (def) => seamOnly.push(def) } },
+    { ...FETCH_FILE_DEFAULTS, fetchWithCurl: false },
   )
-  assert.equal(fetchFileToolState.registered, true, 'the curl backend needs no web service')
+  assert.equal(seamOnly.length, 1, 'the definition is still registered, it just cannot fetch yet')
+  assert.equal(fetchFileToolState.registered, false, 'no web service and no curl is NOT capability')
 
   // A context with NO tool registry registers nothing, and the guard can see that. That is the
   // fail-safe: no replacement tool means the block must not run.

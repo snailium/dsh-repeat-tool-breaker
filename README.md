@@ -493,25 +493,25 @@ exists to remove.
 
 **It has two backends, and the difference is a risk, not a detail.**
 
-| | `fetchWithCurl: false` (default) | `fetchWithCurl: true` |
+| | `fetchWithCurl: true` (default) | `fetchWithCurl: false` |
 |---|---|---|
-| retrieval | `ctx.web`, the platform's web service | a `curl` subprocess |
-| content types | `text/html`, `text/*`, `application/json|xml`, `*+json`, `*+xml` — **everything else is refused and the body cancelled** | anything: PDFs, images, archives |
-| redirects | same-origin only; a cross-origin hop is refused | followed, cross-origin included |
-| local addresses | refused (the SSRF guard owns that) | reached, loopback and RFC1918 included |
-| cookies | none | one jar per session, so a login carries between fetches |
-| guard | the platform's SSRF validation, per hop | ours: scheme restricted to http/https, optional private-host refusal, size and time caps |
+| retrieval | a `curl` subprocess | `ctx.web`, the platform's web service |
+| content types | anything: PDFs, images, archives | `text/html`, `text/*`, `application/json|xml`, `*+json`, `*+xml` — **everything else is refused and the body cancelled** |
+| redirects | followed, cross-origin included | same-origin only; a cross-origin hop is refused |
+| local addresses | reached, loopback and RFC1918 included | refused (the SSRF guard owns that) |
+| cookies | one jar per session, so a login carries between fetches | none |
+| guard | ours: scheme restricted to http/https, optional private-host refusal, size and time caps | the platform's SSRF validation, per hop |
 
-The default is the polite one and it is a real limitation: the platform classifies the response
-and **cancels the body** of anything it does not recognise, so a PDF cannot be fetched at all. The
-curl backend exists because of a measured dead end — session `b623d414`, where the model needed
-two public PDFs and every path failed: this tool returned `unsupported content type
-"application/pdf"` twice, the shell was refused by this plugin's own block, and a text extractor
-had nothing to extract. Three calls, nothing produced. A steering block that leads to a dead end
-is worse than no block.
+**curl is the default**, because the platform backend is not merely stricter — it dead-ends. It
+classifies the response and **cancels the body** of anything it does not recognise, so a PDF
+cannot be fetched at all; measured in session `b623d414`, where the model needed two public PDFs
+and every path failed: this tool returned `unsupported content type "application/pdf"` twice, the
+shell was refused by this plugin's own block, and a text extractor had nothing to extract. Three
+calls, nothing produced. A steering block that leads to a dead end is worse than no block.
 
-Turning it on is a decision about **what the model may reach**, so it is off by default and it is
-labelled in the UI. What the curl backend still refuses: any scheme other than http or https (it
+The switch is still there, and it is a decision about **what the model may reach**: set
+`fetchWithCurl: false` to put the tool back behind the platform's guard — text only, same-origin
+redirects only, no loopback or RFC1918. What the curl backend still refuses: any scheme other than http or https (it
 will not read `file:///etc/passwd`), anything the URL looks like as an option (`--` precedes the
 URL, and nothing is ever interpolated into a shell), and — with `allowPrivateHosts: false` — any
 host that resolves to loopback, link-local or RFC1918. It is a subprocess with a fixed argv, not a
@@ -539,13 +539,13 @@ at which point `ctx.tools.guard` is the genuine method.
         localHosts: deny            # deny | allow — see "Local addresses"
         # Refuse HTTP made from the shell; send the model to web_fetch_file instead.
         blockShellHttp: true        # refuse a shell call that fetches over HTTP; fail-safe (no-op without the tool)
-        blockLocalHttp: false       # local addresses stay in the shell; they are ordinary work
-        # Which backend web_fetch_file retrieves with. Off: the platform web service — text only,
-        # no cross-origin redirects, no loopback or RFC1918. On: curl — ANY content type (so PDFs
-        # and images can be downloaded at all), redirects anywhere, a per-session cookie jar, and
-        # whatever the shell can reach, loopback included. See "The fetch tool" below before
-        # turning it on: it decides what the MODEL may reach, not just what this plugin does.
-        fetchWithCurl: false
+        blockLocalHttp: false       # local addresses stay in the shell; the fetch tool reaches them too
+        # Which backend web_fetch_file retrieves with. On (the default): curl — ANY content type
+        # (so PDFs and images can be downloaded at all), redirects anywhere, a per-session cookie
+        # jar, and whatever the shell can reach, loopback included. Off: the platform web service —
+        # text only, no cross-origin redirects, no loopback or RFC1918. This decides what the MODEL
+        # may reach, so set it to false if the model should not touch your own network.
+        fetchWithCurl: true
         shellHttpBlock:             # the verbs the block REFUSES; `[]` switches the block off entirely
           - curl
           - wget

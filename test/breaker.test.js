@@ -1639,26 +1639,33 @@ test('T49: the block is a flat refusal — it never asks, and it fires on the FI
   assert.ok(handlers.get('tools/pre-execute') !== undefined)
 })
 
-test('T50: FAIL-SAFE — no replacement tool means no block', () => {
-  // Refusing a fetch when the replacement is absent is not a redirect, it is a lost
-  // capability: the network, gone. So a profile without `ctx.web` must keep shell HTTP.
-  const noWeb = fakeCtx()
-  apply(noWeb.ctx, {})
+test('T50: FAIL-SAFE — the block runs only when the replacement can FETCH', () => {
+  // Refusing a fetch when the replacement cannot do it is not a redirect, it is a lost
+  // capability: the network, gone. So the test is about CAPABILITY, not about which service a
+  // profile happens to mount.
+  const noBackend = fakeCtx()
+  apply(noBackend.ctx, { fetchWithCurl: false })   // platform backend, and no ctx.web to serve it
   for (const command of ['curl -s https://weather.gc.ca/x', 'wget -q -O - https://x.example.com/']) {
-    assert.equal(verdict(noWeb.guards, bash(command)), undefined, `must NOT block without the tool: ${command}`)
+    assert.equal(verdict(noBackend.guards, bash(command)), undefined, `must NOT block without a working tool: ${command}`)
   }
 
-  // With the service present the tool registers, and the same call is then refused —
-  // and the denial names the tool, because the guard only blocks when it exists.
-  const withWeb = fakeCtx({ web: true })
-  apply(withWeb.ctx, {})
-  assert.equal(withWeb.registered.length, 1, 'the tool must register')
-  assert.equal(withWeb.registered[0].name, 'web_fetch_file')
-  const denial = verdict(withWeb.guards, bash('curl -s https://weather.gc.ca/x'))
+  // The default is curl, and it needs no service: a bare profile has a tool that CAN fetch, so
+  // the same call is refused and the denial names it. This is the case that keeps the block
+  // honest in a profile with no web service at all.
+  const curlDefault = fakeCtx()
+  apply(curlDefault.ctx, {})
+  assert.equal(curlDefault.registered.length, 1, 'the tool must register')
+  assert.equal(curlDefault.registered[0].name, 'web_fetch_file')
+  const denial = verdict(curlDefault.guards, bash('curl -s https://weather.gc.ca/x'))
   assert.equal(typeof denial, 'string')
   assert.match(denial, /Use `web_fetch_file` instead/)
   assert.match(denial, /1\. web_fetch_file\(url\)/, 'the two-step shape must be spelled out')
   assert.match(denial, /still work/, 'and it must say what still works')
+
+  // With the platform backend selected, the web service is what makes it capable.
+  const withWeb = fakeCtx({ web: true })
+  apply(withWeb.ctx, { fetchWithCurl: false })
+  assert.equal(typeof verdict(withWeb.guards, bash('curl -s https://weather.gc.ca/x')), 'string')
 })
 
 test('T51: the block is configurable, and off is genuinely off', () => {

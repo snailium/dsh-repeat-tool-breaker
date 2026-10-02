@@ -314,8 +314,11 @@ EXPECT_DENIAL="SHELL_HTTP_BLOCKED" \
 # wording. That is the end-to-end proof the tool still registers and still reaches ctx.web.
 echo "=== web_fetch_file end to end (the tool the block redirects to) ==="
 rm -rf "$PWD/fetched"
+# The platform backend is NOT the default any more, so this scenario has to ask for it: with
+# curl the same loopback URL would simply be fetched, which is the point of the switch.
+EXTRA_PATCH=$'- id: repeat-tool-breaker\n  config:\n    fetchWithCurl: false' \
 EXPECT_ANY_ERROR=1 EXPECT_TEXT='non-public IP address' \
-  run_scenario "web_fetch_file is executed and inherits the SSRF guard" 0 1 \
+  run_scenario "web_fetch_file is executed and inherits the SSRF guard (platform backend)" 0 1 \
   MOCK_REPEATS=1 MOCK_TOOL=web_fetch_file MOCK_TOOL_ARGS="{\"url\": \"http://127.0.0.1:9/x\"}"
 
 # …and the succeeding half needs the open internet. DNS, not HTTP: a shell fetch is the thing
@@ -341,7 +344,8 @@ echo "=== a public PDF, with the curl backend ==="
 if getent hosts www.w3.org >/dev/null 2>&1; then
   PDF_URL="https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
   rm -rf "$PWD/fetched"
-  EXTRA_PATCH=$'- id: repeat-tool-breaker\n  config:\n    fetchWithCurl: true' \
+  # No EXTRA_PATCH: curl is the DEFAULT, and this scenario is what says so out loud. If a future
+  # release flips the default back, this stops producing a .pdf.
   EXPECT_TEXT='Fetched (HTTP 200)' EXPECT_FILE="$PWD/fetched/**/*.pdf" \
     run_scenario "a public PDF lands as a .pdf file" 1 1 \
     MOCK_REPEATS=1 MOCK_TOOL=web_fetch_file MOCK_TOOL_ARGS="{\"url\": \"$PDF_URL\"}"
