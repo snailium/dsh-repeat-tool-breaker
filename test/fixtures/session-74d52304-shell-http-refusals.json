@@ -1,0 +1,41 @@
+{
+  "provenance": {
+    "session": "74d52304-eaff-4e1f-a7cb-8b5823932093 (dsh 0.1.7)",
+    "what": "shell-HTTP refusals while verifying the relay mobile-access provider; used as regressions",
+    "redacted": [
+      "a live bearer token used for the local API handshake",
+      "the operator's public hostname, which appeared inside a JSON request body",
+      "the local account name"
+    ],
+    "note": "command SHAPES are verbatim. The token and the hostname are not, and the literal replacement table lives only in the generating script, which is not kept."
+  },
+  "refusals": [
+    {
+      "turn": 16,
+      "step": 3,
+      "tool": "bash",
+      "kind": "SHELL_HTTP_BLOCKED",
+      "expect": "refused",
+      "verdict": "a REMOTE curl to the relay public hostname - a true positive",
+      "command": "echo \"=== cloudflared-tunnel config ===\"; docker inspect cloudflared-tunnel --format '{{.HostConfig.NetworkMode}}' 2>/dev/null; docker inspect cloudflared-tunnel --format '{{json .Config.Cmd}}' 2>/dev/null; docker inspect cloudflared-tunnel --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep -iE \"TUNNEL|TOKEN\" | sed 's/=.\\{8\\}.*/=<redacted>/' | head -3; echo; echo \"=== is dsh1.example.com reachable right now? ===\"; timeout 15 curl -s -o /dev/null -w \"dsh1.example.com -> %{http_code}\\n\" https://dsh1.example.com/relay/health 2>&1 || echo \"  (unreachable/timeout)\"; echo; echo \"=== DNS ===\"; timeout 10 dig +short dsh1.example.com 2>/dev/null | head -3 || getent hosts dsh1.example.com 2>/dev/null || echo \"  (no resolve)\""
+    },
+    {
+      "turn": 19,
+      "step": 4,
+      "tool": "bash",
+      "kind": "SHELL_HTTP_BLOCKED",
+      "expect": "allowed",
+      "verdict": "the target was $B = http://127.0.0.1:3080/... ; the body URL is data",
+      "command": "TOKEN=REDACTED-TOKEN; rm -f /tmp/j; curl -s -L -o /dev/null -c /tmp/j -b /tmp/j \"http://127.0.0.1:3080/?token=$TOKEN\"; A=(-b /tmp/j -H \"origin: http://127.0.0.1:3080\" -H 'content-type: application/json'); B=http://127.0.0.1:3080/api/mobile-access\necho \"=== 1. select origin provider ===\"\ncurl -s -m 10 \"${A[@]}\" -X POST -d '{\"provider\":\"origin\"}' $B/remote/provider -o /tmp/p.json -w \"  http=%{http_code}\\n\"\necho \"=== 2. save origin config for dsh2 ===\"\ncurl -s -m 12 \"${A[@]}\" -X POST -d '{\"version\":1,\"publicOrigin\":\"https://dsh2.example.com\",\"listenHost\":\"127.0.0.1\",\"listenPort\":3444,\"allowedCidrs\":[\"127.0.0.0/8\"]}' $B/remote/origin/configure -o /tmp/oc.json -w \"  http=%{http_code}\\n\"\nnode -e 'const o=require(\"/tmp/oc.json\");if(o.error)console.log(\"  ERR:\",JSON.stringify(o.error).slice(0,300));else console.log(\"  configured:\",JSON.stringify(o).slice(0,200))'\necho \"=== 3. start it ===\"\ncurl -s -m 12 \"${A[@]}\" -X POST -d '{\"running\":true}' $B/remote/control -o /tmp/s.json -w \"  http=%{http_code}\\n\"\nnode -e 'const o=require(\"/tmp/s.json\");console.log(\"  provider:\",o.provider,\"running:\",o.running,\"state:\",o.state);console.log(\"  origin:\",JSON.stringify(o.providers?.origin||{}).slice(0,220))'\nsleep 5\necho \"=== listeners ===\"; ss -ltn 2>/dev/null | grep -E ':3444|:3443'"
+    },
+    {
+      "turn": 19,
+      "step": 6,
+      "tool": "bash",
+      "kind": "SHELL_HTTP_BLOCKED",
+      "expect": "allowed",
+      "verdict": "the target was the same local $B ; the body URL is data",
+      "command": "curl -s -m 12 -b /tmp/j -H \"origin: http://127.0.0.1:3080\" -H 'content-type: application/json' -X POST -d '{\"version\":1,\"publicOrigin\":\"https://dsh2.example.com\",\"listenHost\":\"127.0.0.1\",\"listenPort\":3444,\"allowedCidrs\":[\"127.0.0.0/8\"]}' http://127.0.0.1:3080/api/mobile-access/remote/origin/configure -o /tmp/oc.json -w \"origin configure http=%{http_code}\\n\"; node -e 'const o=require(\"/tmp/oc.json\");if(o.error)console.log(\"  ERR:\",JSON.stringify(o.error).slice(0,300));else console.log(\"  ok:\",JSON.stringify(o).slice(0,240))' 2>/dev/null || head -c 240 /tmp/oc.json"
+    }
+  ]
+}

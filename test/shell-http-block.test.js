@@ -231,3 +231,61 @@ test('B11: a heredoc written to a FILE is not run by this call', () => {
     'a heredoc fed to a shell still runs locally',
   )
 })
+
+test('B12: a payload URL is data, and a target in a variable is still a target', () => {
+  // Session 74d52304 (dsh 0.1.7). Three curls to the LOCAL dsh API — a verification run — and
+  // two of them were refused. Two defects combined, and either one alone was harmless:
+  //
+  //   1. the address scan read a URL out of a JSON REQUEST BODY, so `{"publicOrigin":"https://…"}`
+  //      made an all-local call look remote and defeated the whole-command exemption;
+  //   2. the real target was `$B/remote/provider`, with `B=http://127.0.0.1:3080/api/mobile-access`
+  //      assigned earlier in the same command, so the per-candidate exemption had nothing to test.
+  const variableTarget = [
+    'B=http://127.0.0.1:3080/api/mobile-access',
+    'curl -s -m 12 -X POST -d \'{"publicOrigin":"https://' + 'public.example"}\' $B/remote/origin/configure',
+  ].join('\n')
+  assert.equal(refused(variableTarget), false, 'a local target held in a variable is still local')
+
+  // The body's URL is DATA being configured, not a target being fetched.
+  const bodyUrl = 'curl -s -X POST -d \'{"publicOrigin":"https://public.example"}\' ' + LOCAL + '/api/x'
+  assert.equal(refused(bodyUrl), false, 'a URL inside a JSON body is not the target')
+  const headerUrl = 'curl -s -H "origin: https://public.example" ' + LOCAL + '/api/x'
+  assert.equal(refused(headerUrl), false, 'a URL inside a header value is not the target')
+  const writeOut = 'curl -s -w "  http=%{http_code}\\n" -o /tmp/p.json ' + LOCAL + '/api/x'
+  assert.equal(refused(writeOut), false, 'the write-out format is data, not a command')
+
+  // …and the resolutions must not become a hole: a REMOTE target behind the same variable is
+  // refused, because resolving the assignment is what makes it visible as remote.
+  const remoteVariable = 'B=https://' + 'public.example/x\ncurl -s "$B"'
+  assert.equal(refused(remoteVariable), true, 'a remote target behind a variable is still remote')
+
+  // An interpreter's inline program is CODE, not data. `-c` is a cookie jar for a fetcher and
+  // "execute this" for a shell; `-e` is a referer for a fetcher and "evaluate this" for node. A
+  // verb-blind flag table deleted both programs and let these through — which is why the table is
+  // applied per candidate, by verb (CODE_VERBS).
+  assert.equal(refused("bash -c 'wget -q https://" + "public.example/x'"), true, 'an inline shell fetch is code')
+  assert.equal(refused('node -e "fetch(\'https://' + 'public.example/x\')"'), true, 'an inline node fetch is code')
+  assert.equal(refused('python3 -c "import urllib.request; urllib.request.urlopen(\'https://' + 'public.example/x\')"'), true)
+
+  // An unresolvable target is still a refusal: "cannot prove it is local" is not "local".
+  assert.equal(refused('curl -s "$UNSET_VARIABLE"'), true, 'an invisible target is not an exemption')
+})
+
+test('B13: the real refusals of session 74d52304 land on their documented verdict', async () => {
+  const { readFileSync } = await import('node:fs')
+  const fixture = JSON.parse(
+    readFileSync(new URL('./fixtures/session-74d52304-shell-http-refusals.json', import.meta.url), 'utf8'),
+  )
+  assert.ok(fixture.refusals.length >= 3, 'the fixture must carry the refusals it documents')
+  // Two were false positives and one was RIGHT. Pinning only the first kind would invite a rule
+  // that allows everything; the fixture carries each verdict and the reason, so a future retune
+  // has to keep both directions true.
+  for (const entry of fixture.refusals) {
+    const want = entry.expect === 'refused'
+    assert.equal(
+      refused(entry.command),
+      want,
+      `turn ${entry.turn} step ${entry.step} should be ${entry.expect}: ${entry.verdict}`,
+    )
+  }
+})
