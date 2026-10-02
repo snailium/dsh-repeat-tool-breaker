@@ -5,6 +5,48 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-09-29
+
+### Fixed — two false positives while verifying the relay against the LOCAL dsh API
+
+Measured on session `74d52304` (dsh 0.1.7): three curls to the local API were refused twice, by
+two defects that were each harmless alone. The third refusal in that session was correct and
+stays — a remote curl to the relay's public hostname, which is what `web_fetch_file` is for.
+
+- **A URL inside a request body is data, not a target.** The address scan read
+  `-d '{"publicOrigin":"https://…"}'` as an address, so an all-local command looked remote and
+  the whole-command local exemption never fired. `stripDataValues` now blanks the value of the
+  flags that carry data — request bodies, headers, write-out formats, forms, credentials,
+  cookies — before addresses are extracted. That also removes the candidate a
+  `-w "  http=%{http_code}"` format string used to produce, whose verb was `http`.
+- **A target held in a variable is still a target.** The real target was
+  `$B/remote/provider`, with `B=http://127.0.0.1:3080/api/mobile-access` assigned earlier in the
+  same command, so the per-candidate exemption had nothing to test and a named verb with no
+  visible address was refused. `resolveAssignments` substitutes simple `NAME=value` assignments
+  and `$NAME` / `${NAME}` references — shallow on purpose: one pass, no recursion, arrays left
+  alone, and a value containing `$` is not re-expanded.
+
+Both run per **candidate, by verb**, and that is not a detail. A short flag's meaning belongs to
+its verb: `-c` is a cookie jar for a fetcher and "execute this" for a shell, `-e` is a referer
+for a fetcher and "evaluate this" for node, perl or php. A flat, verb-blind flag table deleted
+the inline program out of an inline shell fetch and an inline interpreter fetch, letting both
+through — the suite caught it in five places. `CODE_VERBS` names the shells and interpreters
+whose flags carry code, and the table is skipped for them; their inner commands still arrive as
+their own candidates and are judged on their own verbs.
+
+Not a hole, and pinned by tests: a REMOTE target behind the same variable is still refused, an
+unresolvable target is still a refusal, and inline interpreter fetches stay refused.
+
+Verified: 123 unit tests, the 25-case probe at zero disagreement, the 0.1.7-rc.2 compat suite,
+and a replay in which the two false positives are allowed and the true positive is still refused.
+
+### Added
+
+- `test/fixtures/session-74d52304-shell-http-refusals.json` — the session's three refusals with
+  each one's verdict and reason. Two were false positives and one was right; pinning only the
+  first kind would invite a rule that allows everything.
+
+
 ## [0.8.6] - 2026-09-29
 
 ### Added — the dsh compatibility range is machine-readable
@@ -1153,7 +1195,8 @@ reversible from config alone.
 - Deterministic guard-logic acceptance suite (`test/logic.test.mjs`) and GitHub
   Actions CI on Node 20 and 22.
 
-[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.6...HEAD
+[Unreleased]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.7...HEAD
+[0.8.7]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/snailium/dsh-repeat-tool-breaker/compare/v0.8.3...v0.8.4
