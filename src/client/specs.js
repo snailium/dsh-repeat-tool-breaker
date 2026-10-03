@@ -40,3 +40,12 @@ export const csvField = (field) => ({
     return values.length === 0 ? { kind: 'clear' } : { kind: 'set', value: values }
   },
 })
+
+export const stringField = (field) => ({
+  field,
+  format: (value) => (typeof value === 'string' ? value : ''),
+  parse: (text) => {
+    const trimmed = text.trim()
+    return trimmed === '' ? { kind: 'clear' } : { kind: 'set', value: trimmed }
+  },
+})

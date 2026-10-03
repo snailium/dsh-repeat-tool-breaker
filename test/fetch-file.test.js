@@ -334,7 +334,7 @@ test('F14: the exported Config IS the settings schema, and every field is volati
   const fields = Object.keys(Config.dict ?? {})
   assert.deepEqual(
     [...fields].sort(),
-    ['blockLocalHttp', 'blockShellHttp', 'failLimit', 'failWarnAt', 'fetchWithCurl', 'shellHttpBlock', 'summarizeAt', 'warnAt'],
+    ['blockLocalHttp', 'blockShellHttp', 'failLimit', 'failWarnAt', 'shellHttpBlock', 'summarizeAt', 'warnAt'],
   )
   for (const field of fields) {
     assert.equal(Config.dict[field].meta?.volatile, true, `${field} must be volatile or the form skips it`)

@@ -34,6 +34,19 @@ export const en = {
   failWarnAtHint: 'Consecutive failures before the advisory that says to stop retrying.',
   failLimit: 'Failure block threshold',
   failLimitHint: 'Consecutive failures before the call is refused outright.',
+
+  outputDir: 'Output directory',
+  outputDirHint: 'Directory where fetched files are saved, relative to the workspace root.',
+  maxBytes: 'Max body size (bytes)',
+  maxBytesHint: 'Maximum body size in bytes to save (default 8MB).',
+  timeoutMs: 'Timeout (ms)',
+  timeoutMsHint: 'Timeout for curl downloads in milliseconds (default 30,000ms).',
+  maxRedirects: 'Max redirects',
+  maxRedirectsHint: 'Maximum redirect hops to follow (default 5).',
+  allowPrivateHosts: 'Allow private hosts',
+  allowPrivateHostsHint: 'Whether loopback and RFC1918 private IP addresses can be fetched by curl.',
+  cookieJar: 'Session cookie jar',
+  cookieJarHint: 'Share cookies across fetches within the same session.',
 }
 
 export const zh = {
@@ -75,4 +88,17 @@ export const zh = {
     '\u8fde\u7eed\u5931\u8d25\u591a\u5c11\u6b21\u540e\uff0c\u63d0\u9192\u4e0d\u8981\u518d\u91cd\u8bd5\u3002',
   failLimit: '\u5931\u8d25\u963b\u65ad\u9608\u503c',
   failLimitHint: '\u8fde\u7eed\u5931\u8d25\u591a\u5c11\u6b21\u540e\uff0c\u76f4\u63a5\u62d2\u7edd\u8c03\u7528\u3002',
+
+  outputDir: '\u4fdd\u5b58\u76ee\u5f55',
+  outputDirHint: '\u6293\u53d6\u6587\u4ef6\u7684\u4fdd\u5b58\u76ee\u5f55\uff0c\u76f8\u5bf9\u4e8e\u5de5\u4f5c\u533a\u6839\u76ee\u5f55\u3002',
+  maxBytes: '\u6700\u5927\u4fdd\u5b58\u5b57\u8282\u6570',
+  maxBytesHint: '\u4fdd\u5b58\u7684\u54cd\u5e94\u6b63\u6587\u6700\u5927\u5b57\u8282\u6570\uff08\u9ed8\u8ba4 8MB\uff09\u3002',
+  timeoutMs: '\u8d85\u65f6\u65f6\u95f4\uff08\u6beb\u79d2\uff09',
+  timeoutMsHint: 'curl \u4e0b\u8f7d\u7684\u8d85\u65f6\u65f6\u95f4\uff08\u6beb\u79d2\uff0c\u9ed8\u8ba4 30,000ms\uff09\u3002',
+  maxRedirects: '\u6700\u5927\u91cd\u5b9a\u5411\u8df3\u6570',
+  maxRedirectsHint: '\u8ddf\u968f\u91cd\u5b9a\u5411\u7684\u6700\u5927\u8df3\u8f6c\u6b21\u6570\uff08\u9ed8\u8ba4 5\uff09\u3002',
+  allowPrivateHosts: '\u5141\u8bb8\u6293\u53d6\u79c1\u6709\u4e3b\u673a',
+  allowPrivateHostsHint: '\u662f\u5426\u5141\u8bb8 curl \u6293\u53d6\u672c\u5730\u56de\u73af\u53ca\u79c1\u6709\u5c40\u57df\u7f51 IP \u5730\u5740\u3002',
+  cookieJar: '\u5171\u4eab\u4f1a\u8bdd Cookie',
+  cookieJarHint: '\u5728\u540c\u4e00\u4f1a\u8bdd\u5185\u7684\u591a\u6b21\u6293\u53d6\u4e4b\u95f4\u4fdd\u6301\u5e76\u5171\u4eab Cookie\u3002',
 }

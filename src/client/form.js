@@ -150,20 +150,23 @@ export class CardForm {
 }
 
 export class CardController {
-  constructor(scope) {
-    this.form = new CardForm(scope, FIELD_SPECS)
+  constructor(scope, specs = FIELD_SPECS, layout = FIELD_LAYOUT) {
+    this.specs = specs
+    this.layout = layout
+    this.form = new CardForm(scope, specs)
     this.store = this.form.bind(() => this.projection())
   }
 
   projection() {
     const state = this.form.shell()
     const fields = {}
-    for (const spec of FIELD_SPECS) fields[spec.field] = this.form.field(spec.field)
+    for (const spec of this.specs) fields[spec.field] = this.form.field(spec.field)
     return { ...state, fields }
   }
 
   inject() {
     return {
+      layout: this.layout,
       hooks: { repeatToolBreaker: this.store },
       ...this.form.actions(),
     }

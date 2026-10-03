@@ -180,18 +180,6 @@ export const Config = z.object({
         'the block would only remove the shell route to something the tool already allows.',
     )
     .volatile(),
-  fetchWithCurl: z
-    .boolean()
-    .default(DEFAULTS.fetchWithCurl)
-    .description(
-      'Fetch with curl instead of the platform web service. ON by default, and the RISK is why ' +
-        'this switch is worth knowing about: curl saves ANY content type (PDFs, images, archives), ' +
-        'follows redirects off-origin, shares cookies between fetches of one session, and reaches ' +
-        'whatever the shell can reach — loopback and RFC1918 included. Turn it OFF to keep the ' +
-        'tool text-only, unable to follow a cross-origin redirect, and unable to touch private ' +
-        'addresses.',
-    )
-    .volatile(),
   shellHttpBlock: z
     .array(z.string())
     .default([...DEFAULTS.shellHttpBlock])

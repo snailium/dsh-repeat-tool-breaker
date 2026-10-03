@@ -26,9 +26,10 @@ export async function buildClientBundle() {
 
   const stripImportsExports = (code) =>
     code
+      .replace(/import\s+(?:\{[\s\S]*?\}|[\w*]+)\s+from\s+['"][^'"]*['"];?\s*/gmu, '')
       .replace(/^import\s+.*?;?\s*$/gmu, '')
       .replace(/^export\s+(const|function|class)\s+/gmu, '$1 ')
-      .replace(/^export\s*\{[^}]*\};?\s*$/gmu, '')
+      .replace(/export\s*\{[\s\S]*?\};?\s*/gmu, '')
       .trim()
 
   const header = `/**
@@ -57,6 +58,12 @@ window.__ModuleLoader__.load({
     exports.PACKAGE_NAME = PACKAGE_NAME
     exports.LOCALE_NS = LOCALE_NS
     exports.FIELD_LAYOUT = FIELD_LAYOUT
+    exports.BREAKER_FIELD_LAYOUT = BREAKER_FIELD_LAYOUT
+    exports.FETCH_FILE_FIELD_LAYOUT = FETCH_FILE_FIELD_LAYOUT
+    exports.CARD_LAYOUT = CARD_LAYOUT
+    exports.CARD_SPECS = CARD_SPECS
+    exports.ROWS = ROWS
+    exports.rowConfigKey = rowConfigKey
     return module.exports
   },
 })

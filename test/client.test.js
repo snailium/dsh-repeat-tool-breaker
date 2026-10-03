@@ -191,9 +191,11 @@ function fakeClientCtx(scope) {
  * @param captured - what `apply` claimed.
  * @returns the bundle config registration.
  */
-function formCard(captured) {
-  const entry = captured.registrations.find((item) => item.options.name === 'plugins.bundle.config')
-  if (entry === undefined) throw new Error('the plugins.bundle.config slot was never claimed')
+function formCard(captured, rowId = 'repeat-tool-breaker') {
+  const entry = captured.registrations.find(
+    (item) => item.options.name === 'plugins.row.config' && item.options.key.endsWith(`#${rowId}`),
+  )
+  if (entry === undefined) throw new Error(`the plugins.row.config slot for ${rowId} was never claimed`)
   return entry
 }
 
@@ -225,54 +227,41 @@ test('C3: the bundle requires only react and the shared settings primitives', as
   )
 })
 
-test('C4: the claimed slot key is the namespace the Host registers', async () => {
+test('C4: the claimed slot keys are the row namespaces the Host registers', async () => {
   const { face } = await loadBundle()
   const scope = fakeScope()
   const { ctx, captured } = fakeClientCtx(scope)
   face.apply(ctx)
-  // ONE slot. The card used to claim `plugins.item` as well, but that LIST is built from the
-  // same slot dsh's OWN plugins register into, so the entry made this third-party plugin
-  // appear under "Official" — and once the form moved to the bundle slot it was an entry that
-  // said "official" and led to a page with no settings on it. A non-dsh plugin claims the
-  // bundle slot only.
-  assert.deepEqual(captured.slotInjects, ['plugins.bundle.config'])
-  assert.equal(captured.registrations.length, 1)
+  assert.deepEqual(captured.slotInjects, ['plugins.row.config', 'plugins.row.config'])
+  assert.equal(captured.registrations.length, 2)
 
-  const form = formCard(captured)
-  assert.equal(form.options.name, 'plugins.bundle.config')
-  // The KEYED slot is matched by PACKAGE name (`{entryKey: pkg.name}`), NOT by the settings
-  // namespace, and the page's "configured" ledger reads the same option. A wrong key does not
-  // raise — it leaves the package un-configurable and renders no section at all.
-  assert.equal(
-    form.options.key,
-    MANIFEST.name,
-    'the keyed slot must carry the PACKAGE name from package.json — the page filters on it',
-  )
-  // The namespace still gates the whole registration (whileServed), and it is the loader
-  // ENTRY ID the Host serves — a mismatch means the form never mounts.
-  assert.equal(captured.bound, PLUGIN_NAME)
-  assert.equal(
-    form.options.key,
-    face.PACKAGE_NAME,
-    'the card hard-codes that name, so a package rename fails HERE instead of silently',
-  )
-  assert.equal(typeof form.options.label, 'function')
-  assert.equal(typeof form.options.inject, 'function')
-  assert.equal(captured.bound, PLUGIN_NAME)
-  assert.equal(typeof form.component, 'function')
+  for (const row of ['repeat-tool-breaker', 'web-fetch-file']) {
+    const form = formCard(captured, row)
+    assert.equal(form.options.name, 'plugins.row.config')
+    assert.equal(form.options.key, `${MANIFEST.name}#${row}`)
+    assert.equal(typeof form.options.inject, 'function')
+    assert.equal(typeof form.component, 'function')
+  }
 })
 
-test('C5: the card edits exactly the fields the Host schema declares, and no others', async () => {
+test('C5: the cards edit exactly the fields the Host schemas declare, and no others', async () => {
   const { face } = await loadBundle()
-  // 0.1.7 derives the settings FORM from the plugin's exported `Config`
-  // (`SettingsForms.schema()` reads `entry.fiber.runtime.Config`), so that is what the
-  // card must agree with — not a separately registered namespace schema.
-  const declared = Object.keys(Config.dict ?? {})
-  const edited = face.FIELD_LAYOUT.map((entry) => entry.field)
+  const { Config: FetchFileConfig } = await import('../lib/fetch-file-component.js')
+
+  const declaredBreaker = Object.keys(Config.dict ?? {})
+  const editedBreaker = face.BREAKER_FIELD_LAYOUT.map((entry) => entry.field)
   assert.deepEqual(
-    [...declared].sort(),
-    [...edited].sort(),
-    'the card and the namespace must expose the same fields; a mismatch silently hides a setting',
+    [...declaredBreaker].sort(),
+    [...editedBreaker].sort(),
+    'the breaker card and the namespace must expose the same fields; a mismatch silently hides a setting',
+  )
+
+  const declaredFetch = Object.keys(FetchFileConfig.dict ?? {})
+  const editedFetch = face.FETCH_FILE_FIELD_LAYOUT.map((entry) => entry.field)
+  assert.deepEqual(
+    [...declaredFetch].sort(),
+    [...editedFetch].sort(),
+    'the fetch-file card and the namespace must expose the same fields; a mismatch silently hides a setting',
   )
 })
 
@@ -287,13 +276,14 @@ test('C6: every field the card renders has copy, and every copy key belongs to a
   face.apply(ctx)
   assert.ok(dictionaries, 'apply must register the card dictionaries')
   assert.equal(dictionaries.en.title, 'Repeat tool breaker')
-  for (const { field } of face.FIELD_LAYOUT) {
+  const allFields = [...face.BREAKER_FIELD_LAYOUT, ...face.FETCH_FILE_FIELD_LAYOUT]
+  for (const { field } of allFields) {
     for (const key of [field, `${field}Hint`]) {
       assert.equal(typeof dictionaries.en[key], 'string', `en is missing ${key}`)
       assert.equal(typeof dictionaries.zh[key], 'string', `zh is missing ${key}`)
     }
   }
-  const fieldKeys = new Set(face.FIELD_LAYOUT.flatMap(({ field }) => [field, `${field}Hint`]))
+  const fieldKeys = new Set(allFields.flatMap(({ field }) => [field, `${field}Hint`]))
   for (const key of Object.keys(dictionaries.en)) {
     assert.equal(typeof dictionaries.zh[key], 'string', `zh is missing ${key}`)
     if (fieldKeys.has(key)) continue
@@ -446,14 +436,18 @@ test('C14: a served namespace renders the card, collapsed, with the save disable
     discard() {},
   })
   assert.equal(rendered.type, 'SettingsForm', 'the page supplies the frame; this supplies the form')
-  assert.equal(rendered.children.length, 8, 'one field per declared setting, in render order')
+  assert.equal(rendered.children.length, 7, 'one field per declared setting, in render order')
   assert.equal(rendered.children[0].type, 'SettingsValueField')
   assert.equal(rendered.props.state.available, true)
 
-  // The form answers ONLY the view its slot asks for. Nothing serves a summary any more —
-  // the Installed entry shows the PACKAGE description — so a stray view must render nothing
-  // rather than a half-card.
-  for (const view of ['summary', 'form', 'detail']) {
+  // view: 'summary' returns the row description fallback
+  const summary = formCard(captured).component({
+    view: 'summary',
+    t: (key) => key,
+  })
+  assert.equal(summary, 'description')
+
+  for (const view of ['form', 'detail']) {
     const stray = formCard(captured).component({
       view,
       t: (key) => key,
@@ -463,7 +457,7 @@ test('C14: a served namespace renders the card, collapsed, with the save disable
       save() {},
       discard() {},
     })
-    assert.equal(stray, null, `view ${JSON.stringify(view)} must render nothing on the bundle slot`)
+    assert.equal(stray, null, `view ${JSON.stringify(view)} must render nothing`)
   }
 })
 
