@@ -85,7 +85,7 @@ import {
   warnMessage,
 } from './lib/message.js'
 import { classifyFailure } from './lib/failure.js'
-import { createFetchFileState, fetchFileToolState, registerFetchFileTool } from './lib/fetch-file.js'
+import { FETCH_FILE_DEFAULTS, createFetchFileState, fetchFileToolState, registerFetchFileTool } from './lib/fetch-file.js'
 import { createTracker, hasUserMessage } from './lib/window.js'
 import { DEFAULTS, mergeDefaults, validateCfg } from './lib/defaults.js'
 import { blockShellHttp } from './lib/block-policy.js'
@@ -492,19 +492,26 @@ export function apply(ctx, config = {}) {
   // can actually FETCH -- naming a tool a profile does not have is worse than naming nothing. The
   // tool registers either way, but the flag the guard reads means capability: true when curl is
   // the backend, and set when the web service arrives for the default backend.
-  if (cfg.embedFetchFile !== false) {
+  if (cfg.embedFetchFile === true) {
+    // A STANDALONE mount: the operator asked this row to carry the tool, which means no
+    // `web-fetch-file` row is mounted. Start from the fetch-file defaults and overlay whatever
+    // this row's config actually carries — it may carry none, since the fetch-file keys live in
+    // that component's `Config`. Passing `cfg` fields straight through (as this did) handed the
+    // tool nine `undefined`s: an output directory literally named `undefined`, and
+    // `--max-filesize undefined`, which curl rejects before it fetches anything.
     const unregisterTool = registerFetchFileTool(
       ctx,
       {
-        fetchWithCurl: cfg.fetchWithCurl,
-        outputDir: cfg.outputDir,
-        maxBytes: cfg.maxBytes,
-        timeoutMs: cfg.timeoutMs,
-        maxRedirects: cfg.maxRedirects,
-        userAgent: cfg.userAgent,
-        allowPrivateHosts: cfg.allowPrivateHosts,
-        cookieJar: cfg.cookieJar,
-        curlPath: cfg.curlPath,
+        ...FETCH_FILE_DEFAULTS,
+        ...(typeof cfg.fetchWithCurl === 'boolean' ? { fetchWithCurl: cfg.fetchWithCurl } : {}),
+        ...(typeof cfg.outputDir === 'string' ? { outputDir: cfg.outputDir } : {}),
+        ...(Number.isInteger(cfg.maxBytes) ? { maxBytes: cfg.maxBytes } : {}),
+        ...(Number.isInteger(cfg.timeoutMs) ? { timeoutMs: cfg.timeoutMs } : {}),
+        ...(Number.isInteger(cfg.maxRedirects) ? { maxRedirects: cfg.maxRedirects } : {}),
+        ...(typeof cfg.userAgent === 'string' ? { userAgent: cfg.userAgent } : {}),
+        ...(typeof cfg.allowPrivateHosts === 'boolean' ? { allowPrivateHosts: cfg.allowPrivateHosts } : {}),
+        ...(typeof cfg.cookieJar === 'boolean' ? { cookieJar: cfg.cookieJar } : {}),
+        ...(typeof cfg.curlPath === 'string' ? { curlPath: cfg.curlPath } : {}),
       },
       fetchFile,
     )

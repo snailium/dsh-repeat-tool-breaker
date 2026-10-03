@@ -27,6 +27,11 @@ function fakeCtx(options = {}) {
             if (idx !== -1) registered.splice(idx, 1)
           }
         },
+        // The real registry answers lookups by name (`dsh-tools` NamedEntries.get), and
+        // `registerFetchFileTool` uses exactly that to notice a tool the OTHER row already
+        // registered. A fake without it cannot express the collision at all — which is how the
+        // first version of this test passed while proving nothing.
+        get: (name) => registered.find((tool) => tool.name === name),
         guard: (g) => {
           guards.push(g)
           return () => {
@@ -120,4 +125,34 @@ test('component decoupling: repeat-tool-breaker with embedFetchFile: false coord
   assert.equal(verdict(env.guards, bash(cmd)), undefined, 'must safely allow shell HTTP once tool component is unmounted')
 
   breakerTeardown()
+})
+
+
+test('component decoupling: the DEFAULT breaker config does not register the tool', () => {
+  // The bundle declares the dedicated row, so the default is NOT to embed. A profile patch that
+  // reconfigures the breaker row (warnAt, failWarnAt) used to drop the bundle's explicit
+  // `embedFetchFile: false` and put the embed back, which is how the collision below was reached
+  // in a real instance.
+  const env = fakeCtx()
+
+  const breakerTeardown = applyBreaker(env.ctx, {})
+  assert.equal(env.registered.length, 0, 'the default mount must leave the tool to its own row')
+
+  const fetchTeardown = applyFetchFile(env.ctx, { fetchWithCurl: true })
+  assert.equal(env.registered.length, 1, 'exactly one registration across both rows')
+  assert.equal(env.registered[0].name, 'web_fetch_file')
+
+  const blocked = verdict(env.guards, bash('curl -s https://example.com/data.json'))
+  assert.equal(typeof blocked, 'string', 'once the dedicated row provides the tool, the block runs')
+
+  // And a breaker that ALSO embeds (the standalone mount) must not collide with the row.
+  const env2 = fakeCtx()
+  const standalone = applyBreaker(env2.ctx, { embedFetchFile: true })
+  assert.equal(env2.registered.length, 1)
+  const second = applyFetchFile(env2.ctx, { fetchWithCurl: true })
+  assert.equal(env2.registered.length, 1, 'the later registrant stands down instead of throwing')
+  second()
+  standalone()
+  breakerTeardown()
+  fetchTeardown()
 })

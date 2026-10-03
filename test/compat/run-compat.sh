@@ -316,7 +316,7 @@ echo "=== web_fetch_file end to end (the tool the block redirects to) ==="
 rm -rf "$PWD/fetched"
 # The platform backend is NOT the default any more, so this scenario has to ask for it: with
 # curl the same loopback URL would simply be fetched, which is the point of the switch.
-EXTRA_PATCH=$'- id: repeat-tool-breaker\n  config:\n    fetchWithCurl: false' \
+EXTRA_PATCH=$'- id: web-fetch-file\n  config:\n    fetchWithCurl: false' \
 EXPECT_ANY_ERROR=1 EXPECT_TEXT='non-public IP address' \
   run_scenario "web_fetch_file is executed and inherits the SSRF guard (platform backend)" 0 1 \
   MOCK_REPEATS=1 MOCK_TOOL=web_fetch_file MOCK_TOOL_ARGS="{\"url\": \"http://127.0.0.1:9/x\"}"

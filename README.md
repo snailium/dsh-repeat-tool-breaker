@@ -625,10 +625,31 @@ that isn't yet in the composed tree.)
 
 The knobs an operator is most likely to want mid-session are editable in the Web UI,
 without a restart: open **Settings → Plugins**, and in the **Installed** list open
-**dsh-repeat-tool-breaker** — that package page is where the card lives. (It is deliberately
-*not* in the **Official** list: that list is built from the `plugins.item` slot, which is where
-dsh's own plugins live, so a third-party plugin claiming it would be presented as a shipped
-one.) Seven
+**dsh-repeat-tool-breaker**. (It is deliberately *not* in the **Official** list: that list is
+built from the `plugins.item` slot, which is where dsh's own plugins live, so a third-party
+plugin claiming it would be presented as a shipped one.)
+
+That package page shows **two components**, and each one carries its own card:
+
+| Component (row id) | Mounted as | Card fields |
+|---|---|---|
+| `repeat-tool-breaker` | `dsh-repeat-tool-breaker` | `blockShellHttp`, `blockLocalHttp`, `shellHttpBlock`, `warnAt`, `summarizeAt`, `failWarnAt`, `failLimit` |
+| `web-fetch-file` | `dsh-repeat-tool-breaker/fetch-file` | `fetchWithCurl`, `outputDir`, `maxBytes`, `timeoutMs`, `maxRedirects`, `allowPrivateHosts`, `cookieJar` |
+
+Open the component in that list to reach its card. The split means the fetch tool's knobs are
+reachable at all (they were not configurable through the single card this replaced), and it means
+the **fetch-file card is the one that configures the running tool** — the `web-fetch-file` row is
+the registrar. A profile that mounts the breaker row ALONE gets no tool unless it sets
+`embedFetchFile: true` on that row, and then the tool runs on the fetch-file **defaults**, because
+those keys belong to the other component's schema.
+
+The slots are the **keyed** `plugins.row.config`, keyed `${PACKAGE_NAME}#${rowId}` (not the plain
+package name), and a wrong key fails **silently**: the page's "configured" ledger is built from
+those entries' `key`, so a mismatch leaves the row un-configurable and renders no card at all,
+with nothing logged. Both keys are derived from pinned constants in `lib/client.js`, asserted
+against `package.json` and `cordis.patch.yml` by the test suite.
+
+Seven
 fields — `blockShellHttp`, `blockLocalHttp`, `shellHttpBlock`, `warnAt`, `summarizeAt`,
 `failWarnAt`, `failLimit` — are staged and written on **Save**; a per-field
 `Overridden` badge with a `Reset` stages a clear back to the composition layer. A

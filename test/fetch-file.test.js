@@ -599,3 +599,43 @@ test('F25: a non-http scheme and a private host are both refused before curl run
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+
+test('F26: a second registration of web_fetch_file stands down instead of throwing', { skip: skipCurl }, async () => {
+  // The breaker row and the dedicated web-fetch-file row can both reach the registry (a profile
+  // patch that reconfigures the breaker row drops the bundle's `embedFetchFile: false` out of the
+  // composed config, so the embed comes back). Registering the name twice used to throw, and the
+  // error took the SECOND entry down: `web-fetch-file ... 1 entry did not activate`, with its
+  // settings card never rendering again.
+  const registered = []
+  const ctx = {
+    tools: {
+      register: (definition) => {
+        registered.push(definition)
+        return () => registered.splice(registered.indexOf(definition), 1)
+      },
+      // What a real registry answers once a name is taken.
+      get: (name) => registered.find((definition) => definition.name === name),
+    },
+    get: () => undefined,
+  }
+
+  const settings = { ...FETCH_FILE_DEFAULTS, fetchWithCurl: true }
+  fetchFileToolState.registered = false
+  const disposeFirst = registerFetchFileTool(ctx, settings)
+  assert.equal(registered.length, 1)
+  assert.equal(fetchFileToolState.registered, true)
+
+  // The second caller must not throw, must not duplicate, and must report the capability it can
+  // see — the tool exists, which is what the guard's fail-safe asks.
+  assert.doesNotThrow(() => {
+    const disposeSecond = registerFetchFileTool(ctx, settings)
+    assert.equal(typeof disposeSecond, 'function')
+    // Its disposer is a no-op: the FIRST registration owns the entry and disposes it.
+    disposeSecond()
+  })
+  assert.equal(registered.length, 1, 'one tool, not two')
+
+  disposeFirst()
+  assert.equal(registered.length, 0)
+})

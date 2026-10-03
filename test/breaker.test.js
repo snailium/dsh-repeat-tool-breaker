@@ -36,7 +36,7 @@ import {
 } from '../lib/fetch-file.js'
 import { createTracker, hasUserMessage } from '../lib/window.js'
 import { askMessage, denyMessage, renderResult, summarizeMessage, warnMessage } from '../lib/message.js'
-import { apply, name as PLUGIN_NAME, SOURCE_KIND } from '../index.js'
+import { apply as applyBreaker, name as PLUGIN_NAME, SOURCE_KIND } from '../index.js'
 
 const cfg = validateCfg(mergeDefaults({}))
 const A = { id: 'agent-A' }
@@ -89,6 +89,22 @@ function runUntilDenied(tracker, exec, max = CAP + 2) {
 // ---------------------------------------------------------------------------
 // T1 — host ping-pong with a churning --max-time, same output file
 // ---------------------------------------------------------------------------
+
+/**
+ * `apply` for a STANDALONE breaker mount.
+ *
+ * The breaker registers `web_fetch_file` itself only when `embedFetchFile` says so: the package's
+ * bundle declares a dedicated `web-fetch-file` row that owns the tool, and registering one tool
+ * name twice makes the second entry fail to activate — an entire settings row lost. So the
+ * default is false, and a test that mounts the breaker ALONE and asserts the shell-HTTP block has
+ * to ask for the embed. The coordination between the two rows is covered in
+ * test/fetch-file-component.test.js.
+ *
+ * @param ctx - the fake context.
+ * @param cfg - the plugin config, with the standalone flag applied first.
+ * @returns the teardown function `apply` returns.
+ */
+const applyStandalone = (ctx, cfg = {}) => applyBreaker(ctx, { embedFetchFile: true, ...cfg })
 
 test('T1: curl ping-pong between alias hosts is caught by net/sink, not by exact', () => {
   const tracker = createTracker(cfg)
@@ -464,7 +480,7 @@ function fakeCtx({ web = false } = {}) {
 test('T12: apply() wires a synchronous guard that denies a repeat with a usable message', async () => {
   assert.equal(PLUGIN_NAME, 'repeat-tool-breaker')
   const { ctx, guards, handlers } = fakeCtx()
-  const dispose = apply(ctx, { blockShellHttp: false,})
+  const dispose = applyStandalone(ctx, { blockShellHttp: false,})
   assert.equal(guards.length, 1)
 
   const call = bash(SAME_COMMAND, { description: '1st' })
@@ -499,7 +515,7 @@ test('T12: apply() wires a synchronous guard that denies a repeat with a usable 
 
 test('T12b: a human turn clears the window, a plugin notice does not', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  const dispose = apply(ctx, { blockShellHttp: false,})
+  const dispose = applyStandalone(ctx, { blockShellHttp: false,})
   const call = bash(SAME_COMMAND)
   for (let i = 0; i < CAP - 1; i += 1) assert.equal(guards[0](call), undefined)
   assert.equal(typeof guards[0](call), 'string')
@@ -516,10 +532,10 @@ test('T12b: a human turn clears the window, a plugin notice does not', async () 
 
 test('T12c: apply() refuses the arguments of the removed v1 configuration', () => {
   const { ctx } = fakeCtx()
-  assert.throws(() => apply(ctx, { blockShellHttp: false, denyAfter: 3 }), /removed in 0\.2\.0/)
-  assert.throws(() => apply(ctx, { blockShellHttp: false, window: 3 }), /window/)
-  assert.throws(() => apply(ctx, { blockShellHttp: false, limits: { net: 1 } }), /must be a finite number >= 2/)
-  assert.equal(typeof apply(ctx, { blockShellHttp: false, limits: { net: null } }), 'function', 'null is the documented "disable this cap"')
+  assert.throws(() => applyStandalone(ctx, { blockShellHttp: false, denyAfter: 3 }), /removed in 0\.2\.0/)
+  assert.throws(() => applyStandalone(ctx, { blockShellHttp: false, window: 3 }), /window/)
+  assert.throws(() => applyStandalone(ctx, { blockShellHttp: false, limits: { net: 1 } }), /must be a finite number >= 2/)
+  assert.equal(typeof applyStandalone(ctx, { blockShellHttp: false, limits: { net: null } }), 'function', 'null is the documented "disable this cap"')
 })
 
 // ---------------------------------------------------------------------------
@@ -715,7 +731,7 @@ test('T25: the host: measure — public hosts yes, local hosts no by default', (
 
 test('T18: localHosts=deny counts and blocks local calls like any other', () => {
   const { ctx, guards } = fakeCtx()
-  apply(ctx, { blockShellHttp: false, onLimit: 'deny', localHosts: 'deny' })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'deny', localHosts: 'deny' })
   for (let i = 0; i < CAP - 1; i += 1) {
     assert.equal(guards[0](localCall('p', i)), undefined, `local call ${i + 1} is inside the cap`)
   }
@@ -752,7 +768,7 @@ test('T26: an exemption covers only the measures that hit', () => {
 test('T24: the three stages fire at warnAt, summarizeAt and the cap', async () => {
   const { ctx, guards, handlers } = fakeCtx()
   // onLimit: deny isolates the two advisory stages from the gate.
-  apply(ctx, { blockShellHttp: false, onLimit: 'deny' })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'deny' })
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
   const call = () => bash('curl -s "https://api.example.com/v1/items?page=1"')
@@ -800,7 +816,7 @@ test('T24: the three stages fire at warnAt, summarizeAt and the cap', async () =
 
 test('T27: a disabled stage is simply never delivered', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { blockShellHttp: false, onLimit: 'deny', warnAt: 0, summarizeAt: null })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'deny', warnAt: 0, summarizeAt: null })
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
   const call = () => bash('curl -s "https://api.example.com/v1/items?page=1"')
@@ -814,7 +830,7 @@ test('T27: a disabled stage is simply never delivered', async () => {
 
 test('T20: the gate asks, and approving stops counting that measure for the turn', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { blockShellHttp: false, onLimit: 'ask' })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'ask' })
   const pre = handlers.get('tools/pre-execute')
   const noop = async () => ({ kind: 'allow' })
 
@@ -840,7 +856,7 @@ test('T20: the gate asks, and approving stops counting that measure for the turn
 
 test('T21: the gate is not local-only — any measure can be asked about', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { blockShellHttp: false, onLimit: 'ask' })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'ask' })
   const pre = handlers.get('tools/pre-execute')
   const noop = async () => ({ kind: 'allow' })
 
@@ -857,7 +873,7 @@ test('T21: the gate is not local-only — any measure can be asked about', async
 
 test('T22: a declined ask stops asking and denies that measure for the turn', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { blockShellHttp: false, onLimit: 'ask' })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'ask' })
   const pre = handlers.get('tools/pre-execute')
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
@@ -889,7 +905,7 @@ test('T22: a declined ask stops asking and denies that measure for the turn', as
 
 test('T23: a human turn clears the exemption and the window', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { blockShellHttp: false, onLimit: 'ask' })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'ask' })
   const pre = handlers.get('tools/pre-execute')
   const noop = async () => ({ kind: 'allow' })
 
@@ -919,7 +935,7 @@ test('T28: a measure with no cap never escalates — the stages live BELOW the c
   // produce up to four near-identical messages — observed in production as
   // `verb:cd has come up 3 times` and `family:http-fetch has now come up 6 times`.
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { blockShellHttp: false,})
+  applyStandalone(ctx, { blockShellHttp: false,})
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
   const agent = { id: 'uncapped-agent' }
@@ -936,7 +952,7 @@ test('T28: a measure with no cap never escalates — the stages live BELOW the c
 
   // A CAP the operator turns ON makes the same measure escalate.
   const on = fakeCtx()
-  apply(on.ctx, { blockShellHttp: false, limits: { 'verb:curl': CAP } })
+  applyStandalone(on.ctx, { blockShellHttp: false, limits: { 'verb:curl': CAP } })
   const onPost = on.handlers.get('tools/post-execute')
   const agent2 = { id: 'capped-agent' }
   const seen = []
@@ -955,7 +971,7 @@ test('T29: when several measures cross together, the message names the useful on
   // Naming `exact:` quotes a truncated command line; the target is what the model can
   // act on.
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { blockShellHttp: false,})
+  applyStandalone(ctx, { blockShellHttp: false,})
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
   const agent = { id: 'tie-agent' }
@@ -1021,7 +1037,7 @@ const isFailureAdvice = (text) => /has failed \d+ times in a row/.test(text)
 
 test('T30: consecutive failures warn, and isError is not the failure test', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { blockShellHttp: false, onLimit: 'deny' })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'deny' })
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
   // One target, failing. The command is identical each time, but the OCCURRENCE
@@ -1046,7 +1062,7 @@ test('T30: consecutive failures warn, and isError is not the failure test', asyn
 
 test('T31: the failure gate blocks the failing target, not the recovery call', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { blockShellHttp: false, onLimit: 'deny' })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'deny' })
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
   const target = 'curl -s "https://api.does-not-exist.invalid/v1/items"'
@@ -1082,7 +1098,7 @@ test('T32: a success clears the streak; a success of something else does not', a
   // The streak restarted at 1, so nothing fires.
   {
     const { ctx, guards, handlers } = fakeCtx()
-    apply(ctx, { blockShellHttp: false, onLimit: 'deny' })
+    applyStandalone(ctx, { blockShellHttp: false, onLimit: 'deny' })
     const post = handlers.get('tools/post-execute')
     for (let i = 1; i < FAIL_WARN; i += 1) await drive(guards, post, bash(target), failed(1), noop)
     await drive(guards, post, bash(target), okResult(), noop)
@@ -1094,7 +1110,7 @@ test('T32: a success clears the streak; a success of something else does not', a
   // clear it — a read is not progress on the thing that keeps failing.
   {
     const { ctx, guards, handlers } = fakeCtx()
-    apply(ctx, { blockShellHttp: false, onLimit: 'deny' })
+    applyStandalone(ctx, { blockShellHttp: false, onLimit: 'deny' })
     const post = handlers.get('tools/post-execute')
     let advice = ''
     for (let i = 1; i <= FAIL_WARN; i += 1) {
@@ -1112,7 +1128,7 @@ test('T32: a success clears the streak; a success of something else does not', a
 
 test('T33: the plugin never counts its own denial as a failure', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { blockShellHttp: false, onLimit: 'deny' })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'deny' })
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
   const target = 'curl -s "https://api.does-not-exist.invalid/v1/items"'
@@ -1145,7 +1161,7 @@ test('T34: the failure track ignores measures the operator disabled', async () =
   // volume measures (9 on `family:http-fetch`, 8 on `verb:curl`). Counting them
   // here would reintroduce the 0.4.0 bug through a new channel.
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { blockShellHttp: false, onLimit: 'deny' })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'deny' })
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
 
@@ -1160,7 +1176,7 @@ test('T34: the failure track ignores measures the operator disabled', async () =
 
 test('T35: failLimit null keeps the advisory and drops the gate', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { blockShellHttp: false, onLimit: 'deny', failLimit: null })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'deny', failLimit: null })
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
   const target = 'curl -s "https://api.does-not-exist.invalid/v1/items"'
@@ -1176,7 +1192,7 @@ test('T35: failLimit null keeps the advisory and drops the gate', async () => {
 
 test('T36: failWarnAt 0 disables the advisory but not the gate', async () => {
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { blockShellHttp: false, onLimit: 'deny', failWarnAt: 0 })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'deny', failWarnAt: 0 })
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
   const target = 'curl -s "https://api.does-not-exist.invalid/v1/items"'
@@ -1287,7 +1303,7 @@ test('T42: the failure track catches the reported spin, end to end', async () =>
   // all against one host. The occurrence track sees nothing repeated; the failure
   // track must fire at failWarnAt.
   const { ctx, guards, handlers } = fakeCtx()
-  apply(ctx, { blockShellHttp: false, onLimit: 'deny' })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'deny' })
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
 
@@ -1350,7 +1366,7 @@ function verdict(guards, exec) {
 
 test('T47: the block is SEMANTIC — it does not care how the fetch is made', () => {
   const { ctx, guards } = fakeCtx({ web: true })
-  apply(ctx, {})
+  applyStandalone(ctx, {})
   const blocked = [
     'curl -s https://weather.gc.ca/x',
     'wget -q -O - https://weather.gc.ca/x',
@@ -1374,7 +1390,7 @@ test('T47b: the KNOWN HOLE of a command-level rule, asserted rather than pretend
   // discovered: closing it needs the capability removed (a sandbox without egress),
   // not a better rule.
   const { ctx, guards } = fakeCtx({ web: true })
-  apply(ctx, {})
+  applyStandalone(ctx, {})
   for (const command of [
     'bash /tmp/fetch.sh', // an HTTP verb inside a file: the verb here is `bash`
     'python3 /tmp/probe.py', // likewise, with `python3`
@@ -1398,7 +1414,7 @@ test('T47b: the KNOWN HOLE of a command-level rule, asserted rather than pretend
 
 test('T48: local addresses, allowlisted verbs and ordinary commands are untouched', () => {
   const { ctx, guards } = fakeCtx({ web: true })
-  apply(ctx, {})
+  applyStandalone(ctx, {})
   const allowed = [
     // local: the fetch tool inherits the SSRF guard and CANNOT reach these, so
     // blocking them would be a lost capability rather than a redirect
@@ -1426,11 +1442,11 @@ test('T48b: the blacklist IS the policy, and editing it is the point', () => {
   // fetch-to-file replacement `curl` does. Taking it off restores the old behaviour, which
   // is exactly what the settings box is for.
   const strict = fakeCtx({ web: true })
-  apply(strict.ctx, {})
+  applyStandalone(strict.ctx, {})
   assert.equal(typeof verdict(strict.guards, bash('wget -q -O - https://example.com/x')), 'string')
 
   const extended = fakeCtx({ web: true })
-  apply(extended.ctx, { shellHttpBlock: ['curl', 'aria2c'] })
+  applyStandalone(extended.ctx, { shellHttpBlock: ['curl', 'aria2c'] })
   assert.equal(verdict(extended.guards, bash('wget -q -O - https://example.com/x')), undefined)
 
   // A package manager is NOT a fetch client under this rule, so `npm i git+https://…` is
@@ -1458,7 +1474,7 @@ test('T48c: a regex-escaped URL is read as the address it spells', () => {
   assert.equal(normUrl('http://127.0.0.1:3080/', {}).host, '127.0.0.1')
 
   const { ctx, guards } = fakeCtx({ web: true })
-  apply(ctx, {})
+  applyStandalone(ctx, {})
   const allowed = [
     "grep -oE 'http://127\\.0\\.0\\.1:3080/\\?token=[A-Za-z0-9_-]+'",
     'curl -s http://127\\.0\\.0\\.1:3080/\\?token=abc',
@@ -1504,7 +1520,7 @@ test('T48d: a bracketed IPv6 literal is judged by its address, not its brackets'
   assert.equal(isLocalHost('[::1]'), true, 'a raw bracketed host is accepted too')
 
   const { ctx, guards } = fakeCtx({ web: true })
-  apply(ctx, {})
+  applyStandalone(ctx, {})
   for (const command of ['curl -s http://[::1]:3080/healthz', 'curl -s http://[fe80::1]/x']) {
     assert.equal(verdict(guards, bash(command)), undefined, `must be allowed: ${command}`)
   }
@@ -1529,7 +1545,7 @@ test('T48f: a PATTERN-POSITION tool is exempt, and the residual is asserted', ()
   // access — grep has none — and refusing it does not redirect a fetch, it blocks a read.
   // The refusal message would also be FALSE: it states that the call fetches over HTTP.
   const { ctx, guards } = fakeCtx({ web: true })
-  apply(ctx, {})
+  applyStandalone(ctx, {})
   const allowed = [
     "grep -rn 'https://api.example.com/v1/x' config/",
     "rg 'https://api.example.com/v1/x' config/",
@@ -1573,7 +1589,7 @@ test('T48g: the trigger is a MECHANISM, so an address alone is not a refusal', (
   // new rule refuses, the old one refused too — it is a strict subset, so it can add no
   // refusal. What it stops refusing is ordinary work that happens to contain an address.
   const { ctx, guards } = fakeCtx({ web: true })
-  apply(ctx, {})
+  applyStandalone(ctx, {})
 
   const allowed = [
     // authoring and inspection — the commands a model must write to handle URLs in text
@@ -1630,7 +1646,7 @@ test('T48g: the trigger is a MECHANISM, so an address alone is not a refusal', (
 
 test('T49: the block is a flat refusal — it never asks, and it fires on the FIRST call', () => {
   const { ctx, guards, handlers } = fakeCtx({ web: true })
-  apply(ctx, { onLimit: 'ask' })
+  applyStandalone(ctx, { onLimit: 'ask' })
   // First call, no count behind it: a flat deny, not an escalation.
   const out = verdict(guards, bash('curl -s https://weather.gc.ca/x'))
   assert.equal(typeof out, 'string')
@@ -1644,7 +1660,7 @@ test('T50: FAIL-SAFE — the block runs only when the replacement can FETCH', ()
   // capability: the network, gone. So the test is about CAPABILITY, not about which service a
   // profile happens to mount.
   const noBackend = fakeCtx()
-  apply(noBackend.ctx, { fetchWithCurl: false })   // platform backend, and no ctx.web to serve it
+  applyStandalone(noBackend.ctx, { fetchWithCurl: false })   // platform backend, and no ctx.web to serve it
   for (const command of ['curl -s https://weather.gc.ca/x', 'wget -q -O - https://x.example.com/']) {
     assert.equal(verdict(noBackend.guards, bash(command)), undefined, `must NOT block without a working tool: ${command}`)
   }
@@ -1653,7 +1669,7 @@ test('T50: FAIL-SAFE — the block runs only when the replacement can FETCH', ()
   // the same call is refused and the denial names it. This is the case that keeps the block
   // honest in a profile with no web service at all.
   const curlDefault = fakeCtx()
-  apply(curlDefault.ctx, {})
+  applyStandalone(curlDefault.ctx, {})
   assert.equal(curlDefault.registered.length, 1, 'the tool must register')
   assert.equal(curlDefault.registered[0].name, 'web_fetch_file')
   const denial = verdict(curlDefault.guards, bash('curl -s https://weather.gc.ca/x'))
@@ -1664,13 +1680,13 @@ test('T50: FAIL-SAFE — the block runs only when the replacement can FETCH', ()
 
   // With the platform backend selected, the web service is what makes it capable.
   const withWeb = fakeCtx({ web: true })
-  apply(withWeb.ctx, { fetchWithCurl: false })
+  applyStandalone(withWeb.ctx, { fetchWithCurl: false })
   assert.equal(typeof verdict(withWeb.guards, bash('curl -s https://weather.gc.ca/x')), 'string')
 })
 
 test('T51: the block is configurable, and off is genuinely off', () => {
   const off = fakeCtx({ web: true })
-  apply(off.ctx, { blockShellHttp: false })
+  applyStandalone(off.ctx, { blockShellHttp: false })
   for (const command of [
     'curl -s https://weather.gc.ca/x',
     'python3 -c "import urllib.request;urllib.request.urlopen(\'https://x/\')"',
@@ -1680,13 +1696,13 @@ test('T51: the block is configurable, and off is genuinely off', () => {
 
   // `blockLocalHttp` is the switch that gives the capability up deliberately.
   const strict = fakeCtx({ web: true })
-  apply(strict.ctx, { blockLocalHttp: true })
+  applyStandalone(strict.ctx, { blockLocalHttp: true })
   assert.equal(typeof verdict(strict.guards, bash('curl -s http://127.0.0.1:3080/')), 'string')
 
   // An EMPTY blacklist is the documented off-switch that does not touch `blockShellHttp`:
   // nothing is on the list, so nothing is refused.
   const noBlock = fakeCtx({ web: true })
-  apply(noBlock.ctx, { shellHttpBlock: [] })
+  applyStandalone(noBlock.ctx, { shellHttpBlock: [] })
   assert.equal(verdict(noBlock.guards, bash('curl -s https://weather.gc.ca/x')), undefined)
 })
 
@@ -1695,7 +1711,7 @@ test('T52: a blocked fetch is not counted as a failure of the model', () => {
   // refusal, the block would feed the gate and the model would be punished for a
   // call that never happened.
   const { ctx, guards, handlers } = fakeCtx({ web: true })
-  apply(ctx, { onLimit: 'deny' })
+  applyStandalone(ctx, { onLimit: 'deny' })
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
   return (async () => {
@@ -1731,7 +1747,7 @@ test('T54: the failure gate scopes to the FAILING TARGET, so the model can pivot
   // shares NO fingerprint with the failing target is allowed — which is what makes a pivot
   // possible instead of merely telling the model to stop.
   const { ctx, guards, handlers } = fakeCtx({ web: true })
-  apply(ctx, { blockShellHttp: false, onLimit: 'deny' })
+  applyStandalone(ctx, { blockShellHttp: false, onLimit: 'deny' })
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
   const fetchUrl = (url, agent = A) => ({ name: 'web_fetch_file', arguments: { url }, agent })

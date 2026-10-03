@@ -232,6 +232,55 @@ gap, and a Save from the new home lands in the profile patch.
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-03
+
+### Fixed — the two-row split collided with any profile patch that reconfigured the breaker row
+
+`web-fetch-file` failed to activate, in an isolated 0.1.7 instance and in exactly the way the
+production profile is configured:
+
+```
+dsh: warning: 1 entry did not activate
+web-fetch-file (dsh-repeat-tool-breaker/fetch-file): Error: tool "web_fetch_file" is already
+registered
+    at registerFetchFileTool (lib/fetch-file.js:510)
+    at new apply (lib/fetch-file-component.js:72)
+```
+
+The bundle's breaker row sets `embedFetchFile: false` so the dedicated row owns the tool, but a
+profile patch that reconfigures that row (`warnAt: 8`, say — the normal way to tune it) REPLACES
+the whole key set, so the flag falls back to its default `true` and the breaker registers the tool
+too. The second registration throws, and the entry it takes down is the one whose settings card the
+operator needed. Two changes, because either alone leaves a trap:
+
+- **Registration is idempotent.** A second caller stands down when the name is taken and reports
+  the capability it can see, instead of throwing. A collision can no longer cost a row.
+- **`embedFetchFile` defaults to `false`.** The bundle always declares the dedicated row, so that
+  is the design; the flag survives as the explicit opt-in for a profile that mounts the breaker
+  ALONE. With `true` as the default, the recovery from a dropped key WAS the collision.
+
+The standalone path is repaired too: it read nine keys off the breaker's own `cfg`, but those keys
+moved to the fetch-file component's `Config`, so every one was `undefined` — an output directory
+literally named `undefined`, and `--max-filesize undefined`, which curl rejects. It now starts from
+the fetch-file defaults and overlays whatever that row carries.
+
+### Tests
+
+- A duplicate registration stands down: no throw, one definition, capability reported.
+- The DEFAULT breaker config does not register the tool, and mounting both rows leaves exactly one
+  registration with the block running — while an explicit standalone mount plus the row still
+  cannot collide.
+- The component test's fake `ctx.tools` grew a `get`, mirroring the real registry. Without it the
+  collision was inexpressible, and the first version of the test passed while proving nothing.
+- The compat harness's SSRF-guard scenario patches the `web-fetch-file` row now, because that is
+  where the fetch-file settings live; the old patch on `repeat-tool-breaker` selected nothing and
+  the scenario would have fetched the loopback URL it asserts to be refused.
+
+Verified in an isolated dsh 0.1.7: both components running (was `1 failed`), both cards rendering
+with their own Save, and a Save on the fetch-file card landing in the `web-fetch-file` row of the
+profile patch.
+
+
 ## [0.8.3] - 2026-09-27
 
 ### Fixed — the shell-HTTP block refused ordinary work in a second session
