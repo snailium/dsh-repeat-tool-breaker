@@ -1,6 +1,8 @@
 export const en = {
   title: 'Repeat tool breaker',
   description: 'Interrupts a stuck turn: repeats of the same call, and runs of consecutive failures.',
+  fetchFileDescription:
+    'Fetch remote URL content to workspace files, returning only the file path to the model.',
   collapse: 'Collapse',
   expand: 'Expand',
   unsaved: 'Unsaved',
@@ -53,6 +55,8 @@ export const zh = {
   title: '\u91cd\u590d\u5de5\u5177\u65ad\u8def\u5668',
   description:
     '\u4e2d\u65ad\u5361\u4f4f\u7684\u56de\u5408\uff1a\u540c\u4e00\u8c03\u7528\u7684\u91cd\u590d\uff0c\u4ee5\u53ca\u8fde\u7eed\u5931\u8d25\u3002',
+  fetchFileDescription:
+    '\u5c06\u8fdc\u7a0b URL \u5185\u5bb9\u6293\u53d6\u5e76\u5199\u5165\u5de5\u4f5c\u533a\u6587\u4ef6\uff0c\u4ec5\u5411\u6a21\u578b\u8fd4\u56de\u6587\u4ef6\u8def\u5f84\u800c\u975e\u5168\u6587\u6b63\u6587\u3002',
   collapse: '\u6536\u8d77',
   expand: '\u5c55\u5f00',
   unsaved: '\u672a\u4fdd\u5b58',

@@ -33,7 +33,7 @@ export function apply(ctx) {
                 locale: LOCALE_NS,
                 inject: () => controller.inject(),
               },
-              Card,
+              (props) => Card({ ...props, row, layout }),
             ),
           ),
         ),

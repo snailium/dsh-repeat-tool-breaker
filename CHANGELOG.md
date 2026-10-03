@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] - 2026-10-03
+
+### Changed
+
+- **Settings Page Partitioning by Row**: Partitioned plugin settings into their respective component rows (`repeat-tool-breaker` and `web-fetch-file`) on the DSH Settings → Plugins page instead of dumping all fields into a single bundle card.
+- **Row Configuration Slot Support**: Registered `plugins.row.config` slots with row-specific field slicing (`FIELD_LAYOUT` for loop breaker controls and `FETCH_FILE_FIELD_LAYOUT` for file fetch controls) and distinct summary descriptions for each component row in both English and Chinese.
+
 ## [0.11.0] - 2026-10-02
 
 ### Added
