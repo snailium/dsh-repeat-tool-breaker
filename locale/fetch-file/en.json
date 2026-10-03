@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Web fetch file",
+    "description": "Fetch a URL and write the body to a file in the workspace, returning the path rather than the body."
+  }
+}

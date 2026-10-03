@@ -20,14 +20,21 @@
     ".": {
       "default": "./index.js"
     },
+    "./fetch-file": {
+      "default": "./lib/fetch-file-component.js"
+    },
     "./client": {
       "default": "./lib/client.js"
     },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./fetch-file/locale/*.json": "./locale/fetch-file/*.json",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
     "lib",
+    "locale",
     "cordis.patch.yml",
     "README.md",
     "CHANGELOG.md",
@@ -47,6 +54,7 @@
     }
   },
   "scripts": {
+    "build:client": "node scripts/build-client.js",
     "test": "node --test test/*.test.js",
     "test:pipeline": "node test/pipeline.e2e.mjs",
     "link:harness": "bash scripts/dev-link-harness.sh"

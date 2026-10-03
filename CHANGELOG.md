@@ -5,6 +5,14 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **Independent `web-fetch-file` Component**: Extracted `web_fetch_file` tool into an independent Cordis component (`dsh-repeat-tool-breaker/fetch-file`, component id `web-fetch-file`), declared alongside `repeat-tool-breaker` in `cordis.patch.yml`. Allows operators to toggle the file download tool on/off independently in DSH Settings → Plugins without affecting loop breaker governance.
+- **Fail-Safe Component Coordination**: When `web-fetch-file` is toggled off, `repeat-tool-breaker`'s fail-safe automatically permits shell HTTP downloads, preventing capability dead-ends.
+- **DSH Settings Page i18n Row Metadata**: Added `locale/en.json` and `locale/zh.json` for the root breaker component, and `locale/fetch-file/en.json` and `locale/fetch-file/zh.json` for the fetch-file component. Exported via `package.json` (`./locale/*.json` and `./fetch-file/locale/*.json`).
+- **Client Bundle Modularization**: Split monolithic 640-line `lib/client.js` into modular source files in `src/client/` (`constants.js`, `locales.js`, `store.js`, `specs.js`, `form.js`, `card.js`, `lifecycle.js`), managed via `scripts/build-client.js` (`npm run build:client`).
+
+
 ## [0.10.0] - 2026-09-29
 
 ### Changed — curl is the DEFAULT fetch backend

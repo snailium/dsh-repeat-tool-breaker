@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Repeat tool breaker",
+    "description": "Break stuck agent turns: repetitive tool calls, runaway loops, and consecutive execution failures."
+  }
+}

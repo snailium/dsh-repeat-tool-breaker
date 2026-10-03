@@ -87,3 +87,8 @@
 - insert:
     - id: repeat-tool-breaker
       name: 'dsh-repeat-tool-breaker'
+      config:
+        embedFetchFile: false
+
+    - id: web-fetch-file
+      name: 'dsh-repeat-tool-breaker/fetch-file'

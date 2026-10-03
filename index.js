@@ -372,11 +372,8 @@ export function apply(ctx, config = {}) {
   const isBlockedShellHttp = (fps, local, command) => {
     if (cfg.blockShellHttp !== true) return false
     // FAIL-SAFE: never refuse a fetch when the replacement tool is not registered.
-    // Without this, a profile that has no web service would lose shell HTTP entirely
-    // — the capability removed and nothing put in its place. The registration is
-    // asynchronous (`ctx.inject`), so early calls in a boot are deliberately allowed
-    // until the tool exists.
-    if (fetchFile.registered !== true) return false
+    // Checked across both local context state and shared component state.
+    if (fetchFile.registered !== true && fetchFileToolState.registered !== true) return false
     return blockShellHttp(command, cfg)
   }
 
@@ -507,21 +504,24 @@ export function apply(ctx, config = {}) {
   // can actually FETCH -- naming a tool a profile does not have is worse than naming nothing. The
   // tool registers either way, but the flag the guard reads means capability: true when curl is
   // the backend, and set when the web service arrives for the default backend.
-  registerFetchFileTool(
-    ctx,
-    {
-      fetchWithCurl: cfg.fetchWithCurl,
-      outputDir: cfg.outputDir,
-      maxBytes: cfg.maxBytes,
-      timeoutMs: cfg.timeoutMs,
-      maxRedirects: cfg.maxRedirects,
-      userAgent: cfg.userAgent,
-      allowPrivateHosts: cfg.allowPrivateHosts,
-      cookieJar: cfg.cookieJar,
-      curlPath: cfg.curlPath,
-    },
-    fetchFile,
-  )
+  if (cfg.embedFetchFile !== false) {
+    const unregisterTool = registerFetchFileTool(
+      ctx,
+      {
+        fetchWithCurl: cfg.fetchWithCurl,
+        outputDir: cfg.outputDir,
+        maxBytes: cfg.maxBytes,
+        timeoutMs: cfg.timeoutMs,
+        maxRedirects: cfg.maxRedirects,
+        userAgent: cfg.userAgent,
+        allowPrivateHosts: cfg.allowPrivateHosts,
+        cookieJar: cfg.cookieJar,
+        curlPath: cfg.curlPath,
+      },
+      fetchFile,
+    )
+    if (typeof unregisterTool === 'function') teardown.push(unregisterTool)
+  }
 
   const disposeGuard = ctx.tools.guard(guard)
   if (typeof disposeGuard === 'function') teardown.push(disposeGuard)
