@@ -15,13 +15,21 @@
 #
 # Usage:
 #   DSH_PREFIX=/tmp/dsh-compat
-#   mkdir -p "$DSH_PREFIX" && cd "$DSH_PREFIX" && npm init -y
-#   npm install --no-audit --no-fund @deepseek-ai/dsh@<version>
+#   mkdir -p "$DSH_PREFIX" && cd "$DSH_PREFIX"
+#   # `npm init -y` refuses a dot-named directory ("Invalid name: .rtb-compat-020"), and the
+#   # default prefix is dot-named on purpose, so write the manifest directly.
+#   printf '{"name":"dsh-compat","private":true}\n' > package.json
+#   npm install --no-audit --no-fund @deepseek-ai/dsh@0.2.0-rc.2
 #   DSH_PREFIX=$DSH_PREFIX ./test/compat/run-compat.sh
+#
+# TARGET: dsh 0.2.x — that is the only line this plugin is tested against now; 0.1.5 and 0.1.7
+# are historical. The version gate below refuses a mismatch rather than silently measuring the
+# wrong dsh, and COMPAT_ALLOW_ANY_VERSION=1 overrides it for a deliberate historical check.
 #
 # Environment:
 #   DSH_PREFIX   npm prefix holding node_modules/@deepseek-ai/dsh
-#                (default: .rtb-compat beside this repo)
+#                (default: .rtb-compat-020 beside this repo, named for the target so a stale
+#                0.1.7 tree cannot be mistaken for it)
 #   DSH_BIN      dsh executable (default: $DSH_PREFIX/node_modules/.bin/dsh)
 #   COMPAT_HOME  throwaway DSH_HOME (default: $DSH_PREFIX/home)
 #   MOCK_PORT    port for the mock model (default: 18999)
@@ -36,8 +44,26 @@ PLUGIN_DIR=$(cd "$HERE/../.." && pwd)
 # The dsh-under-test install lives in a throwaway prefix BESIDE this repo, so a
 # ~300 MB node_modules tree never lands inside the working tree and `git status`
 # stays clean. Point DSH_PREFIX somewhere else to reuse or replace it.
-DSH_PREFIX=${DSH_PREFIX:-$(cd "$PLUGIN_DIR/.." && pwd)/.rtb-compat}
+DSH_PREFIX=${DSH_PREFIX:-$(cd "$PLUGIN_DIR/.." && pwd)/.rtb-compat-020}
 DSH_BIN=${DSH_BIN:-$DSH_PREFIX/node_modules/.bin/dsh}
+
+# --- the target gate ---------------------------------------------------------------------------
+# A version-agnostic prefix plus a version-agnostic script is how you end up reporting a 0.1.7
+# measurement as "0.2.0 compatibility". Pin it.
+COMPAT_TARGET=${COMPAT_TARGET:-0.2}
+if [[ -x "$DSH_BIN" ]]; then
+  DSH_VERSION=$("$DSH_BIN" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*' | head -1 || true)
+  if [[ "$DSH_VERSION" != "$COMPAT_TARGET".* ]]; then
+    if [[ "${COMPAT_ALLOW_ANY_VERSION:-0}" == "1" ]]; then
+      echo "warning: dsh ${DSH_VERSION:-unknown} is outside the ${COMPAT_TARGET}.x target; continuing because COMPAT_ALLOW_ANY_VERSION=1" >&2
+    else
+      echo "REFUSING: this suite targets dsh ${COMPAT_TARGET}.x, found ${DSH_VERSION:-unknown} in $DSH_PREFIX." >&2
+      echo "          0.1.x is historical. Install the target (npm install @deepseek-ai/dsh@latest)" >&2
+      echo "          or set COMPAT_ALLOW_ANY_VERSION=1 for a deliberate historical run." >&2
+      exit 2
+    fi
+  fi
+fi
 COMPAT_HOME=${COMPAT_HOME:-$DSH_PREFIX/home}
 MOCK_PORT=${MOCK_PORT:-18999}
 # Scenario 1's repeat count is derived from the cap further down, once the plugin's

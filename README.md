@@ -291,10 +291,14 @@ permanently nonexistent host — 8 times in a row.
 - **dsh `^0.1.7-rc.2 || >=0.2.0-rc.1 <0.2.1-0`** (session format 4), declared as an
   `optional` **peer dependency** on `@deepseek-ai/dsh` — optional because the host provides
   dsh, and a non-optional peer would make npm/pnpm install a second copy into the consumer's
-  tree. The dsh 0.1.7 line and dsh 0.2.0 are both supported and both verified: the Host-half
-  packages this plugin calls (`dsh-tools`, `dsh-web`, `dsh-web-fetch-http`, `dsh-settings`,
-  `dsh-api-settings-controller`) are byte-identical across the two, and the compat suite passes
-  on each. 0.1.7 removed the imperative settings API and **rejects** the message-source shape
+  tree. The dsh 0.1.7 line and dsh 0.2.0 share one build: the Host-half packages this plugin
+  calls (`dsh-tools`, `dsh-web`, `dsh-web-fetch-http`, `dsh-settings`,
+  `dsh-api-settings-controller`) are byte-identical across the two. **The compat suite targets
+  dsh 0.2.x only** — it passes on `0.2.0-rc.2`, and 0.1.7 is historical: it was verified when the
+  settings split landed, `run-compat.sh` now refuses a non-target install unless
+  `COMPAT_ALLOW_ANY_VERSION=1` is set, and its default prefix is named for the target
+  (`.rtb-compat-020`) so a stale 0.1.7 tree cannot be measured by mistake. 0.1.7 removed the
+  imperative settings API and **rejects** the message-source shape
   that 0.1.5 **requires**, so one build cannot serve both generations: **use 0.7.x on dsh
   0.1.5**.
 - A DSH profile that exposes the `tools` service. The settings page additionally needs the
@@ -1029,7 +1033,7 @@ so it is not part of CI:
 DSH_NODE_MODULES=/path/to/dsh/node_modules/@deepseek-ai npm run test:pipeline
 ```
 
-### Full-boot compatibility check (any dsh version)
+### Full-boot compatibility check (targets dsh 0.2.x)
 
 `test/compat/` boots a **real** `dsh` of the version under test with this plugin
 mounted as a profile bundle, and drives it with a scripted mock model — no GPU,
@@ -1046,8 +1050,9 @@ occurrence cap — and the two occurrence scenarios neutralise their exit status
 
 ```bash
 DSH_PREFIX=/tmp/dsh-compat
-mkdir -p "$DSH_PREFIX" && cd "$DSH_PREFIX" && npm init -y
-npm install --no-audit --no-fund @deepseek-ai/dsh@<version>
+mkdir -p "$DSH_PREFIX" && cd "$DSH_PREFIX"
+printf '{"name":"dsh-compat","private":true}\n' > package.json
+npm install --no-audit --no-fund @deepseek-ai/dsh@0.2.0-rc.2
 
 cd <this repo>
 DSH_PREFIX=$DSH_PREFIX ./test/compat/run-compat.sh
