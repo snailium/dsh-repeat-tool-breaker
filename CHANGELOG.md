@@ -232,6 +232,53 @@ gap, and a Save from the new home lands in the profile patch.
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-10-11
+
+### Fixed — the shell-HTTP block refused scripts that merely NAMED a request API
+
+A retest session (`a3_snowfall_retest`) was refused **126 times**, 102 of them for one command: a
+`python3` heredoc scanning an already-downloaded local file for keywords.
+
+```python
+for kw in ['DATA_URL','ajax','fetch(','axios']:
+    hits = [m.start() for m in re.finditer(re.escape(kw), src)]
+```
+
+It makes no request. The keyword list contains the *spelling* of a request API, and the
+interpreter arm's pattern matched it. `echo 'fetch('`, `grep -rn 'fetch(' src/`,
+`printf '%s' 'urlopen('` and `re.escape('axios')` were refused too — every one a NAME, not a call,
+which is the distinction the blacklist already draws with `command -v curl`.
+
+`stripStringLiterals` now blanks the CONTENT of every string literal before the API pattern runs,
+so mentions stop reading as calls. Four boundaries decided the implementation, and each was found
+by a test or a measurement rather than by reasoning:
+
+- **A quote is shell syntax; its content is what the interpreter receives.** Blanking is right for
+  a mention and wrong for the program a `-c` / `-e` argument or a heredoc body carries: blanking
+  those deleted real calls and let requests through (`node -e "fetch(URL)"`, then a single-quoted
+  `python3 -c` program — the second caught by the T48g regression test).
+- **A heredoc delimiter is syntax; its body is a program.** The delimiter is always blanked, and
+  bodies are located from the PRISTINE text, once: the delimiter rewrite erased the marker a later
+  rescan needed, which silently resurrected the original false positive.
+- **A segment is not a unit of meaning.** `unwrapCommands` splits inside quotes, so
+  `python3 -c "print('uses fetch(')"` arrives as three fragments, the middle one with a
+  nonsense verb that is not a `CODE_VERB`. Stripping per segment then read the program's inner
+  quotes as shell strings and blanked them the wrong way round. The whole command is stripped as
+  one text.
+- **Some evidence IS a string literal.** `require('axios').get(…)` is identified BY the module
+  name, so blanking removes what the pattern looks for. That family reads the unblanked text, while
+  the invocation family (`fetch(`, `urlopen(`) reads the blanked one.
+
+Also asserted in both directions: importing a module is still free (`import urllib.request` is
+allowed — it performs no request), and an all-local command keeps its exemption.
+
+### Tests
+
+- `B7a` pins seven mentions that must be allowed — the retest session's heredoc, `echo`, `grep`,
+  `printf`, an inline `print`, and a bare import — against six calls that must still be refused,
+  including the single-quoted-program and heredoc-program shapes that blanking first broke.
+- 135 unit tests (was 134) and the seven-scenario compat suite on dsh `0.2.0-rc.2`.
+
 ## [0.11.2] - 2026-10-03
 
 ### Fixed — the two-row split collided with any profile patch that reconfigured the breaker row

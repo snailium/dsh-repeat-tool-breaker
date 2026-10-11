@@ -115,6 +115,48 @@ test('B6: a remote fetch is still refused, by every mechanism that can make one'
   }
 })
 
+test('B7a: MENTIONING a request API is not CALLING it', () => {
+  // Measured on a retest session (a3_snowfall_retest): a `python3` heredoc that scanned an
+  // already-downloaded local file for keywords was refused 102 times, because the keyword list
+  // held the string `'fetch('`. `echo 'fetch('`, `grep -rn 'fetch(' src/` and `re.escape('axios')`
+  // were refused too. Each is a NAME, not a call — the same distinction `command -v curl` draws.
+  const mentions = [
+    "python3 - <<'EOF'\nimport re\nsrc = open('/tmp/x.txt').read()\nfor kw in ['DATA_URL','ajax','fetch(','axios']:\n    hits = [m.start() for m in re.finditer(re.escape(kw), src)]\nEOF",
+    "echo 'fetch('",
+    "grep -rn 'fetch(' src/",
+    "grep -rn 'axios' src/",
+    "printf '%s' 'urlopen('",
+    "python3 -c \"print('uses fetch( here')\"",
+    // An import performs no request either — the rule B6's list already relies on.
+    'python3 -c "import urllib.request"',
+  ]
+  for (const command of mentions) {
+    assert.equal(refused(command), false, 'a mention is not a call: ' + JSON.stringify(command.slice(0, 70)))
+  }
+
+  // The other direction, so the blanking cannot become a way through: the SAME spellings still
+  // refuse when they are actually invoked. A `-c` / `-e` argument is a PROGRAM, so its quotes
+  // must keep their content — this is the pair that a naive "blank every literal" pass breaks.
+  const calls = [
+    'node -e "fetch(\'' + REMOTE + '\')"',
+    'node -e "require(\'axios\').get(\'' + REMOTE + '\')"',
+    'python3 -c "import urllib.request; urllib.request.urlopen(\'' + REMOTE + '\')"',
+    'python3 -c "import requests; requests.get(\'' + REMOTE + '\')"',
+    // The SAME call, wrapped in single quotes because the program itself needs the double ones.
+    // Blanking every single-quoted run deleted the whole program here and let a real request
+    // through — so this shape is asserted, not assumed.
+    'python3 -c \'import urllib.request; urllib.request.urlopen("' + REMOTE + '")\'',
+    // A heredoc program, whose body must stay a PROGRAM while the delimiter stays syntax. Two
+    // separate passes over this shape produced the two failure modes at once: the body's inner
+    // quotes were blanked as shell strings (call lost), or the delimiter quote kept the whole
+    // body verbatim (mention read as call).
+    "python3 - <<'PY'\nimport urllib.request\nurllib.request.urlopen('" + REMOTE + "')\nPY",
+  ]
+  for (const command of calls) {
+    assert.equal(refused(command), true, 'a real call must still be refused: ' + command)
+  }
+})
+
 test('B7: a LOCAL fetch is still allowed, and blockLocalHttp still turns that off', () => {
   const local = ['curl -s ' + LOCAL_MODELS, 'python3 -c "import urllib.request; urllib.request.urlopen(\'' + LOCAL_MODELS + '\')"']
   for (const command of local) {
