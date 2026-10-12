@@ -1785,3 +1785,86 @@ test('T54: the failure gate scopes to the FAILING TARGET, so the model can pivot
   await post(fetchUrl(FAILING), { value: { statusCode: 200 } }, noop)
   assert.equal(guards[0](fetchUrl(FAILING)), undefined, 'a success clears the streak and reopens the target')
 })
+
+
+test('T60: a RELEASED call does not reset the convergence run, and rounds tighten the window', () => {
+  // The run is ACCUMULATED refusals, not consecutive ones. Clearing it on release let the count
+  // restart forever: measured 7, 1, 4, 1, 4 refusals between compactions, with the tightening
+  // never taking effect. A model that wriggles past and comes straight back is the case this
+  // measure exists for.
+  const cfg = validateCfg(mergeDefaults({ convergeAfter: 10, convergeRelief: 0.5, convergeFloor: 2 }))
+  const tracker = createTracker(cfg)
+  const A = {}
+  const fp = 'exact:bash:{"command":"sh -c \'exit 7\'"}'
+
+  // `releaseOnce` models a call the model got THROUGH: it is committed as allowed, exactly as the
+  // guard does it. The guard does not clear the run there any more — that is the property under
+  // test — so this helper deliberately does nothing else.
+  const refuseOnce = () => {
+    const reached = tracker.refuseFingerprints(A, [fp])
+    tracker.commit(A, [fp], [{ fp, kind: 'failure' }])
+    return reached
+  }
+  const releaseOnce = () => tracker.commit(A, [fp], [])
+
+  // Window 1: the configured 10, with releases interleaved the way a real loop does it.
+  let hits = []
+  for (let i = 0; i < 10; i += 1) {
+    hits = refuseOnce()
+    // the wriggle: one call let through, then straight back to the same target
+    if (i % 3 === 0) releaseOnce()
+  }
+  assert.equal(hits.length, 1, 'the first window must close at exactly convergeAfter')
+  assert.equal(hits[0].threshold, 10, 'the first window is the configured value')
+  assert.equal(tracker.refusalStreakOf(A, fp), 10)
+
+  // Closing the round resets the count AND narrows the window. That pairing is the throttle.
+  const round1 = tracker.recordConvergence(A, fp)
+  assert.equal(round1.rounds, 1)
+  assert.equal(round1.nextThreshold, 5, 'each round halves the window')
+  assert.equal(tracker.refusalStreakOf(A, fp), 0, 'a round resets the count for the next window')
+
+  // Window 2 closes at 5, window 3 at 3, and 2 is the floor — never below it.
+  const expected = [5, 3, 2, 2, 2]
+  for (const want of expected) {
+    let closed = []
+    for (let i = 0; i < 40 && closed.length === 0; i += 1) {
+      closed = refuseOnce()
+      if (i % 2 === 0) releaseOnce() // releases keep happening; they must not matter
+    }
+    assert.equal(closed.length, 1, `a window must close at ${want}`)
+    assert.equal(closed[0].threshold, want, `the window must tighten to ${want}`)
+    tracker.recordConvergence(A, fp)
+  }
+
+  // The reported next threshold is the same number the policy enforces — one source of truth, so
+  // the denial text cannot promise a window the tracker will not honour.
+  assert.equal(tracker.convergeThresholdFor(A, fp), 2)
+  assert.ok(tracker.convergeRoundsOf(A, fp) >= 5, 'every round is counted')
+})
+
+test('T61: convergeAfter: null disables the throttle entirely', () => {
+  const cfg = validateCfg(mergeDefaults({ convergeAfter: null }))
+  const tracker = createTracker(cfg)
+  const A = {}
+  const fp = 'exact:bash:x'
+  for (let i = 0; i < 50; i += 1) {
+    const reached = tracker.refuseFingerprints(A, [fp])
+    assert.deepEqual(reached, [], 'nothing may ever trigger when the measure is off')
+    tracker.commit(A, [fp], [])
+  }
+  assert.equal(tracker.convergeThresholdFor(A, fp), Number.POSITIVE_INFINITY)
+})
+
+test('T62: a human turn clears the convergence state along with everything else', () => {
+  const cfg = validateCfg(mergeDefaults({}))
+  const tracker = createTracker(cfg)
+  const A = {}
+  const fp = 'exact:bash:x'
+  for (let i = 0; i < 10; i += 1) tracker.refuseFingerprints(A, [fp])
+  tracker.recordConvergence(A, fp)
+  assert.ok(tracker.convergeRoundsOf(A, fp) > 0)
+  tracker.reset(A)
+  assert.equal(tracker.convergeRoundsOf(A, fp), 0, 'a real user message is the only full reset')
+  assert.equal(tracker.refusalStreakOf(A, fp), 0)
+})

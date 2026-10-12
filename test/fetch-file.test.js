@@ -334,7 +334,18 @@ test('F14: the exported Config IS the settings schema, and every field is volati
   const fields = Object.keys(Config.dict ?? {})
   assert.deepEqual(
     [...fields].sort(),
-    ['blockLocalHttp', 'blockShellHttp', 'failLimit', 'failWarnAt', 'shellHttpBlock', 'summarizeAt', 'warnAt'],
+    [
+      'blockLocalHttp',
+      'blockShellHttp',
+      'convergeAfter',
+      'convergeFloor',
+      'convergeRelief',
+      'failLimit',
+      'failWarnAt',
+      'shellHttpBlock',
+      'summarizeAt',
+      'warnAt',
+    ],
   )
   for (const field of fields) {
     assert.equal(Config.dict[field].meta?.volatile, true, `${field} must be volatile or the form skips it`)
@@ -348,7 +359,7 @@ test('F14: the exported Config IS the settings schema, and every field is volati
   // was simply wrong. The explicit union is kept for the INTENT the rendered form reads,
   // and `plainConfig` normalises an unset nullable field to `null`, so the documented
   // off-switch behaves identically whether it was set explicitly or left to its default.
-  assert.doesNotThrow(() => Config({ summarizeAt: null, failLimit: null }))
+  assert.doesNotThrow(() => Config({ summarizeAt: null, failLimit: null, convergeAfter: null }))
   assert.doesNotThrow(() => Config({ warnAt: null }))
 })
 

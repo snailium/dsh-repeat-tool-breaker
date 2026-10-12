@@ -25,6 +25,9 @@ export const BREAKER_FIELD_SPECS = [
   numberField('summarizeAt', { min: 1, integer: true }),
   numberField('failWarnAt', { min: 1, integer: true }),
   numberField('failLimit', { min: 1, integer: true }),
+  numberField('convergeAfter', { min: 1, integer: true }),
+  numberField('convergeRelief', { min: 0, integer: false }),
+  numberField('convergeFloor', { min: 1, integer: true }),
 ]
 
 export const BREAKER_FIELD_LAYOUT = [
@@ -35,6 +38,9 @@ export const BREAKER_FIELD_LAYOUT = [
   { field: 'summarizeAt', numeric: true },
   { field: 'failWarnAt', numeric: true },
   { field: 'failLimit', numeric: true },
+  { field: 'convergeAfter', numeric: true },
+  { field: 'convergeRelief', numeric: true },
+  { field: 'convergeFloor', numeric: true },
 ]
 
 export const FETCH_FILE_FIELD_SPECS = [

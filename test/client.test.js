@@ -436,7 +436,9 @@ test('C14: a served namespace renders the card, collapsed, with the save disable
     discard() {},
   })
   assert.equal(rendered.type, 'SettingsForm', 'the page supplies the frame; this supplies the form')
-  assert.equal(rendered.children.length, 7, 'one field per declared setting, in render order')
+  // One per field in BREAKER_FIELD_LAYOUT; a new setting that forgets its layout entry would
+  // render nowhere, so this count is asserted rather than derived.
+  assert.equal(rendered.children.length, 10, 'one field per declared setting, in render order')
   assert.equal(rendered.children[0].type, 'SettingsValueField')
   assert.equal(rendered.props.state.available, true)
 

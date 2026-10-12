@@ -232,6 +232,64 @@ gap, and a Save from the new home lands in the profile patch.
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-10-12
+
+### Added — a convergence throttle: compaction as a last resort against "the model keeps calling it"
+
+Every other measure assumes a denial ends the matter. It does not. Two recorded sessions show a
+model calling one target **92** and **321** times after it was first refused, and each denial is
+invisible to the counters: a denied call produces no result to classify (the failure track sees
+nothing) and a denial resets the occurrence window (the cap never accumulates). The refusal itself
+is the only signal left.
+
+Three knobs implement the response, and the semantics are the point:
+
+- **`convergeAfter` (10)** — accumulated refusals of one target before the span that keeps retrying
+  it is summarised and REPLACED. The engine is called through the public service
+  (`ctx.compaction.compactIfNeeded(agent, 'context-overflow', signal)`), which is the only path
+  that compacts mid-turn: `compactNow` refuses inside an open turn, and the pressure branch only
+  fires on context size, which a loop does not grow. Nothing private is touched and no official
+  file is modified.
+- **`convergeRelief` (0.5)** — each round NARROWS the next window: 10, 5, 3, 2, 2. One compaction
+  is not a cure — a compaction removes the loop from the surface but cannot change a model's mind,
+  and the first version of this produced **1076 compactions in one run without breaking the loop**.
+  So the intervention is a throttle: it resets the count and tightens what comes next, giving the
+  model room to rejoin the right path and reining it in sooner when it does not.
+- **`convergeFloor` (2)** — the window never shrinks below this, so the escalation stays
+  predictable.
+
+When a round closes, the denial says so: that the history it kept retrying has been replaced, that
+this is a fresh start rather than a permanent ban, and what the next threshold is.
+
+### Fixed — two defects the first implementation had, both found by measurement
+
+- **A released call no longer resets the run.** Treating a call that got through as a fresh start
+  let the count restart forever: measured 7, 1, 4, 1, 4 refusals between compactions, with the
+  tightening never taking effect. Whether a model comes BACK after being let through is exactly the
+  signal a backend/model evaluation wants, so the run is ACCUMULATED and ends only when an
+  intervention has been performed for it.
+- **A round closes the whole fingerprint group.** One refused call carries several views of the
+  same action (`exact:` and `cmd:` here) and every view is counted. Closing only the first left the
+  others accumulating toward their own thresholds, so they fired in alternation instead of
+  tightening.
+
+### Verified
+
+- 138 unit tests (was 135): T60 pins accumulation across releases and the 10 → 5 → 3 → 2 window;
+  T61 pins `convergeAfter: null` as a full off-switch; T62 pins the human-turn reset.
+- End to end in an isolated dsh 0.2.0-rc.2 instance, driven by a scripted model that never stops
+  calling one failing target: the refusals between interventions go 7 → 2 → 1 and stay there,
+  i.e. the window really does tighten.
+- The seven-scenario compat suite passes on dsh `0.2.0-rc.2`.
+
+### Note for anyone testing this
+
+An install is only an install when the VERSION changes. Three rounds of end-to-end testing here
+measured a stale build — `pnpm add` saw the same version on the tarball and left the old copy in
+place, so the new semantics were never exercised while the unit tests (which import the source
+directly) passed. Bump the version before measuring behaviour, and confirm the new code is present
+in `node_modules`.
+
 ## [0.11.3] - 2026-10-11
 
 ### Fixed — the shell-HTTP block refused scripts that merely NAMED a request API

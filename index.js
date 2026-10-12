@@ -100,7 +100,7 @@ import z from '@deepseek-ai/schemastery'
  * alternative — inferring it — is what produced the mismatch this list fixes. A unit test
  * asserts that every name here is declared nullable in `Config`, so the two cannot drift.
  */
-const NULLABLE_SETTINGS = ['summarizeAt', 'failLimit']
+const NULLABLE_SETTINGS = ['summarizeAt', 'failLimit', 'convergeAfter']
 
 /**
  * Resolve a config field to its plain value.
@@ -206,6 +206,21 @@ export const Config = z.object({
     .union([z.number(), z.const(null)])
     .default(DEFAULTS.failLimit)
     .description('Failure gate: consecutive failures before the call is refused. null keeps the advisory and drops the gate.')
+    .volatile(),
+  convergeAfter: z
+    .union([z.number(), z.const(null)])
+    .default(DEFAULTS.convergeAfter)
+    .description('Convergence: ACCUMULATED refusals of one target before the span that keeps retrying it is compacted away. A released call does not reset the count — coming back after being let through is the signal. null disables.')
+    .volatile(),
+  convergeRelief: z
+    .number()
+    .default(DEFAULTS.convergeRelief)
+    .description('How much the convergence window shrinks after each round, as a ratio in (0, 1]. 0.5 turns 10 into 10, 5, 3, 2, 2…')
+    .volatile(),
+  convergeFloor: z
+    .number()
+    .default(DEFAULTS.convergeFloor)
+    .description('The floor the convergence window never shrinks below, so the escalation stays predictable.')
     .volatile(),
 })
 
@@ -316,6 +331,14 @@ export function apply(ctx, config = {}) {
    * (the call never ran), and they are recorded where the ask is settled.
    */
   const deniedByUs = new WeakSet()
+  /**
+   * Targets that have just crossed `convergeAfter` refusals, waiting for a hook that can await.
+   *
+   * The guard is synchronous by contract — it must never await, resolve DNS or touch the disk —
+   * and compaction is a network round trip. So the guard only RECORDS the crossing here, and the
+   * pre-step hook performs it, one step later, where an await is allowed.
+   */
+  const convergenceQueue = []
   /** Disposers of everything this plugin registered, run by the returned teardown. */
   const teardown = []
 
@@ -467,12 +490,36 @@ export function apply(ctx, config = {}) {
     if (blocking.length > 0) {
       deniedByUs.add(exec)
       tracker.commit(agent, fps, blocking)
+      // A denial that is simply repeated is the one failure mode every other measure is blind
+      // to: the call produces no result (so the failure track sees nothing) and the denial
+      // resets the occurrence window (so the cap never accumulates). Counting the refusals is
+      // what makes the loop visible, and the count is carried on the tracker so the pre-step
+      // hook can act on it.
+      const blockedFps = blocking.map((hit) => hit.fp)
+      const reached = tracker.refuseFingerprints(agent, blockedFps)
+      if (reached.length > 0) {
+        // Queue the WHOLE group, not just the fingerprint that tripped. One refused call carries
+        // several views of the same action (`exact:` and `cmd:` here), and every one of them is
+        // counted by the loop above. Closing only the first left the others accumulating toward
+        // their own thresholds, so they fired in alternation and the window never tightened —
+        // measured as refusals-between-compactions of 1, 4, 1, 4 instead of 10, 5, 3, 2.
+        convergenceQueue.push({
+          agent,
+          fps: blockedFps,
+          fp: reached[0].fp,
+          streak: reached[0].streak,
+        })
+      }
       return denyMessage({
         name,
         hits: blocking,
         lastResult: tracker.slot(agent).lastResult,
         cfg,
         refused: blocking.every((hit) => tracker.isRefused(agent, hit.fp)),
+        // A model told only "no" retries; a model told "that history is gone and the next window
+        // is narrower" has something to act on. Only reported once this target has been through
+        // a convergence round, so an ordinary first denial stays short.
+        convergence: convergenceNotice(agent, blocking),
       })
     }
 
@@ -481,6 +528,14 @@ export function apply(ctx, config = {}) {
     const advisory = stageAdvisory(agent, fps)
     if (advisory !== null) advisoryFor.set(exec, advisory)
     tracker.commit(agent, fps, [])
+    // Deliberately NOT clearing the refusal run here.
+    //
+    // Letting one call through does not mean the model changed course — a model that wriggles past
+    // the denial with a cosmetic change and then comes straight back is the exact behaviour this
+    // measure exists to catch, and it is what a backend/model evaluation needs to see. Clearing on
+    // release made the count restart constantly (measured: 7, 1, 4, 1, 4 refusals between
+    // compactions instead of a tightening 10, 5, 3, 2), so the throttle never tightened at all.
+    // The run now ends in exactly one place: after an intervention has been performed on it.
     return undefined
   }
 
@@ -595,13 +650,100 @@ export function apply(ctx, config = {}) {
   // A real human turn clears that agent's window — and with it the exemptions and
   // refusals. Plugin notices and tool results do not, so the breaker's own
   // messages never reset the budget they are trying to enforce.
-  const onPreStep = ctx.on('agent/pre-step', (input, next) => {
+  const onPreStep = ctx.on('agent/pre-step', async (input, next) => {
     refresh()
     const agent = input?.agent ?? null
     if (agent !== null && hasUserMessage(input?.messages)) tracker.reset(agent)
+    if (agent !== null) await converge(agent, input?.signal)
     return next()
   })
   teardown.push(onPreStep)
+
+  /**
+   * Perform a pending convergence intervention: summarise and replace the span containing the
+   * refusal loop, so the model stops retrying a target that is no longer on the surface.
+   *
+   * This is the one measure a denial cannot be argued with. Every softer move has been measured
+   * failing: the model ignored the denial (92 and 321 consecutive refusals in two recorded
+   * sessions), and a hint in the denial text is just another message it can re-read. Compaction
+   * removes the loop itself — after it, the model sees a checkpoint instead of "I tried this 40
+   * times", and there is nothing left to retry.
+   *
+   * Availability is checked, never assumed: the engine is a service (`ctx.get('compaction')`)
+   * and a profile may run none. When it is absent the intervention is skipped silently — a
+   * breaker that throws because an unrelated plugin is missing would be worse than the loop.
+   *
+   * `context-overflow` is the trigger, and deliberately so: it is the branch that compacts
+   * WITHOUT consulting a token threshold (`compactNow` would refuse mid-turn — "the session
+   * already has an open turn" — and the `pressure` branch only fires on context size, which a
+   * loop does not grow). Verified in an isolated instance: a third-party plugin calling this
+   * mid-turn produced `compaction/start` → `summary` → `end` and `replaceGeneration: 0 → 1`.
+   *
+   * @param agent - the agent whose loop crossed the threshold.
+   * @param signal - the live turn signal, forwarded to summarisation.
+   */
+  async function converge(agent, signal) {
+    if (convergenceQueue.length === 0) return
+    // Only this agent's entries, and only the first: one compaction per step is enough, and a
+    // second one would race the first (the engine asserts no active compaction).
+    const index = convergenceQueue.findIndex((entry) => entry.agent === agent)
+    if (index === -1) return
+    const [pending] = convergenceQueue.splice(index, 1)
+    const service = ctx.get?.('compaction')
+    if (service === undefined || service === null) return
+    if (typeof service.compactIfNeeded !== 'function') return
+    try {
+      const result = await service.compactIfNeeded(agent, 'context-overflow', signal)
+      // Close the round: reset the count so the NEXT window can accumulate, and tighten it.
+      //
+      // The reset is deliberate, not a bug being papered over. Compaction cannot change a model's
+      // mind — measured, a scripted model rebuilt the same loop 1076 times while every compaction
+      // succeeded — so the useful thing this can do is throttle: give the model a fresh window to
+      // demonstrate it has moved on, and make each successive window narrower so a model that has
+      // not moved on is reined in sooner. Counting the next attempt against the old total would
+      // deny it that room and turn the measure into an immediate permanent lock.
+      const round = tracker.recordConvergence(agent, pending.fps ?? [pending.fp])
+      if (typeof ctx.logger?.info === 'function') {
+        ctx.logger.info(
+          `repeat-tool-breaker: convergence round ${round.rounds} after ${pending.streak} refusals of ${pending.fp}` +
+            (result === null ? ' (nothing compactable)' : ` (shadowed ${result.shadowedSeqs?.length ?? 0} nodes)`) +
+            `; next window ${round.nextThreshold}`,
+        )
+      }
+    } catch (error) {
+      // A failed compaction must not take the turn down: the denial still stands, and the model
+      // may yet recover on its own.
+      if (typeof ctx.logger?.warn === 'function') {
+        ctx.logger.warn(`repeat-tool-breaker: convergence compaction failed: ${String(error?.message ?? error)}`)
+      }
+    }
+  }
+
+  /**
+   * What to tell the model when a convergence round has already happened for one of the targets
+   * it is being denied on.
+   *
+   * Returns `undefined` unless this target has been through at least one round: a first denial
+   * should stay short, and the notice only means something once the surface has actually been
+   * rewritten. The numbers come from the tracker, so the message cannot drift from the policy
+   * that produced it.
+   *
+   * @param agent - the agent being denied.
+   * @param blocking - the hits that stopped the call.
+   * @returns `{ streak, nextThreshold }`, or `undefined` when no round has happened.
+   */
+  function convergenceNotice(agent, blocking) {
+    for (const hit of blocking) {
+      const rounds = tracker.convergeRoundsOf(agent, hit.fp)
+      if (rounds > 0) {
+        return {
+          streak: tracker.refusalStreakOf(agent, hit.fp),
+          nextThreshold: tracker.convergeThresholdFor(agent, hit.fp),
+        }
+      }
+    }
+    return undefined
+  }
 
   return () => {
     for (const fn of teardown) {
