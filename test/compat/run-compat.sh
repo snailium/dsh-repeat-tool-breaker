@@ -214,6 +214,7 @@ PY
 }
 
 echo "=== dsh under test ==="
+DSH_VERSION_UNDER_TEST=$("$DSH_BIN" --version 2>&1 | tail -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*' | head -1)
 "$DSH_BIN" --version 2>&1 | tail -1
 
 rm -rf "$COMPAT_HOME"
@@ -261,6 +262,17 @@ YAML
 # leaking into the next one.
 cp "$COMPAT_HOME/profiles/probe/cordis.patch.yml" "$COMPAT_HOME/probe-patch-base.yml"
 cp "$COMPAT_HOME/settings.yaml" "$COMPAT_HOME/probe-settings-base.yaml"
+
+  # dsh 0.2.1 refuses to mount a plugin whose peer range does not admit the running runtime
+  # ("skipping profile bundle ... is incompatible with dsh"), which is a SAFE skip rather than a
+  # crash. Running the suite against such a dsh would then fail at "the bundle did not mount" for a
+  # reason that has nothing to do with the behaviour under test. COMPAT_EXEMPT writes the
+  # profile-local exact-version grant that lets the mount proceed, so the suite measures BEHAVIOUR
+  # and the peer range is judged separately — by reading the manifest, and by the release process.
+  if [[ -n "${COMPAT_EXEMPT:-}" ]]; then
+    printf '{\n  "%s": ["%s"]\n}\n' "$COMPAT_EXEMPT" "$DSH_VERSION_UNDER_TEST" \
+      > "$COMPAT_HOME/profiles/probe/compatibility.json"
+  fi
 
 echo "=== bundle mounts? ==="
 if ! DSH_HOME="$COMPAT_HOME" "$DSH_BIN" --profile probe --dump-config 2>&1 | grep -q "dsh-repeat-tool-breaker"; then
