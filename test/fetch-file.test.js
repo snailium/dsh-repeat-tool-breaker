@@ -373,7 +373,7 @@ test('F16: the published package still ships its entry point', async () => {
   // The dsh compatibility range has to be machine-readable, and it has to admit the PRERELEASE
   // builds: semver excludes a prerelease unless a comparator in the same set names one, so
   // `>=0.2.0` would have rejected the 0.2.0-rc.2 this plugin was verified against.
-  assert.equal(manifest.peerDependencies?.['@deepseek-ai/dsh'], '^0.1.7-rc.2 || >=0.2.0-rc.1 <0.3.0-0')
+  assert.equal(manifest.peerDependencies?.['@deepseek-ai/dsh'], '^0.1.7-rc.2 || >=0.2.0-rc.1 <0.2.2-0')
   // dsh comes from the HOST at runtime; a non-optional peer would make npm/pnpm install a
   // second copy of it into the consumer's tree and pin it in their lockfile.
   assert.equal(manifest.peerDependenciesMeta?.['@deepseek-ai/dsh']?.optional, true)
@@ -396,7 +396,7 @@ test('F17: the published package still ships its browser half', async () => {
   // The dsh compatibility range has to be machine-readable, and it has to admit the PRERELEASE
   // builds: semver excludes a prerelease unless a comparator in the same set names one, so
   // `>=0.2.0` would have rejected the 0.2.0-rc.2 this plugin was verified against.
-  assert.equal(manifest.peerDependencies?.['@deepseek-ai/dsh'], '^0.1.7-rc.2 || >=0.2.0-rc.1 <0.3.0-0')
+  assert.equal(manifest.peerDependencies?.['@deepseek-ai/dsh'], '^0.1.7-rc.2 || >=0.2.0-rc.1 <0.2.2-0')
   // dsh comes from the HOST at runtime; a non-optional peer would make npm/pnpm install a
   // second copy of it into the consumer's tree and pin it in their lockfile.
   assert.equal(manifest.peerDependenciesMeta?.['@deepseek-ai/dsh']?.optional, true)

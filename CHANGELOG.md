@@ -232,6 +232,28 @@ gap, and a Save from the new home lands in the profile patch.
 
 ## [Unreleased]
 
+## [0.11.6] - 2026-10-12
+
+### Fixed — the peer range was wider than what was verified
+
+0.11.5 widened the dsh peer range to `<0.3.0-0`, which admits every 0.2.x release. That is
+wider than the evidence: the compat suite and the card render were exercised against
+**0.2.0-rc.2 and 0.2.1-rc.2** only. A peer range is a claim about what has been tested, so the
+upper bound is now
+
+    ^0.1.7-rc.2 || >=0.2.0-rc.1 <0.2.2-0
+
+— the 0.2.1 line including its final release, and nothing beyond it. 0.2.2 is NOT admitted: when
+it arrives, the suite runs against it and the bound is widened on the evidence.
+
+Checked with dsh's own evaluator (the `evaluatePluginCompatibility` the compatibility gate itself
+uses), not with a re-implementation of semver:
+
+    ^0.1.7-rc.2 || >=0.2.0-rc.1 <0.3.0-0   0.2.1-rc.2 OK  0.2.1 OK  0.2.2-rc.1 OK  0.3.0-rc.1 REJECT
+    ^0.1.7-rc.2 || >=0.2.0-rc.1 <0.2.2-0   0.2.1-rc.2 OK  0.2.1 OK  0.2.2-rc.1 REJECT  0.3.0-rc.1 REJECT
+
+138 unit tests pass. The two peer assertions in `test/fetch-file.test.js` follow the range.
+
 ## [0.11.5] - 2026-10-12
 
 ### Fixed — `sink:` was noise in 85% of its cases, and it told a model it was looping when it was not
