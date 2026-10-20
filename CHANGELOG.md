@@ -232,6 +232,84 @@ gap, and a Save from the new home lands in the profile patch.
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-10-12
+
+### Fixed — `sink:` was noise in 85% of its cases, and it told a model it was looping when it was not
+
+An advisory in a real session read
+
+    CONVERGENCE_CHECK: you are repeating yourself — sink:StrictHostKeyChecking=accept-new
+    has come up 7 times this turn.
+
+It is not a loop. `-o StrictHostKeyChecking=accept-new` is the connection option every `scp` in
+that session carried. Measuring every recorded session (127 sessions, 57,261 bash commands) showed
+12.2% of commands produced a `sink:` and roughly **85% of those were noise**, from three
+independent causes:
+
+- **`-o key=value` was read as an output path.** For `ssh`, `scp`, `sftp`, `rsync`, `mosh`,
+  `sshpass` (and `mount`, `docker`, `ffmpeg`, `git`, …) `-o` is ALWAYS an option, and no real
+  destination is spelled `key=value`. Removed: `BatchMode=yes` (197), `StrictHostKeyChecking=accept-new`
+  (176), `IdentitiesOnly=yes` (21), `ConnectTimeout=10` (20).
+- **`> /dev/null` was kept as a sink** — 1,833 occurrences, 26% of all. Discarding output is the
+  ABSENCE of a destination; keeping it gave every silent command one identity.
+- **the sink was credited to the line's first verb**, so `cd /tmp && echo hi > out.txt` recorded
+  `sink:out.txt` owned by `cd` — 3,679 occurrences, 53% of all. Only verbs that produce a payload
+  may own a sink now, and `sinkVerb()` finds the writing command in the chain.
+
+Measured with the same harness over the same corpus, sinks fall from **6,966 (12.2%) to 1,102
+(1.9%)**, and what remains is dominated by the commands that really write (cat 833, echo 141, curl
+69). `cd`, `ssh`, `scp`, `docker`, `git` and `/dev/null` are gone entirely.
+
+Known residual, recorded rather than guessed at: a `>` inside a regex or a quoted string still
+yields a sink-shaped token, and `=` appears as a value. Those are tokenizer-level (quote and regex
+awareness), not sink semantics.
+
+### Fixed — the plugin did not mount on dsh 0.2.1, because the peer range excluded it
+
+dsh 0.2.1 added a compatibility gate: a plugin whose peer range does not admit the running runtime
+is **skipped**, not crashed — the profile boots and the plugin is simply absent. The plugin
+manager says so plainly:
+
+    Problem: dsh-repeat-tool-breaker@0.11.4 is incompatible with DSH 0.2.1-rc.2
+    (requires @deepseek-ai/dsh ^0.1.7-rc.2 || >=0.2.0-rc.1 <0.2.1-0)
+    This plugin pack contains no components.
+
+The old upper bound `<0.2.1-0` excluded every 0.2.1 release, so the plugin was silently absent on
+the current dsh. The range is now
+
+    ^0.1.7-rc.2 || >=0.2.0-rc.1 <0.3.0-0
+
+— the whole 0.2.x line, 0.1.7 kept (production still runs it), 0.3.0 still excluded. The range was
+checked with dsh's OWN evaluator (`evaluatePluginCompatibility` from the 0.2.1 app-boot), not with
+a re-implementation of semver:
+
+    ^0.1.7-rc.2 || >=0.2.0-rc.1 <0.2.1-0   0.1.7-rc.2 OK  0.2.0-rc.2 OK  0.2.1-rc.2 REJECT
+    ^0.1.7-rc.2 || >=0.2.0-rc.1 <0.3.0-0   0.1.7-rc.2 OK  0.2.0-rc.2 OK  0.2.1-rc.2 OK  0.3.0 REJECT
+
+Compatibility was verified rather than assumed, because the gate only says a plugin is refused —
+never why it would have worked:
+
+- the four contracts this plugin depends on are unchanged in 0.2.1: the tool guard still returns a
+  denial string synchronously, a duplicate tool registration still raises, the `compaction` service
+  is still `super(ctx, "compaction")` with `compactIfNeeded` and its `context-overflow` branch (the
+  forced compaction), and the row-config slot key is still `${bundle}#${rowId}` with the same
+  `entryKey` filtering;
+- the seven-scenario compat suite PASSES on 0.2.1-rc.2;
+- an isolated 0.2.1 instance with no exemption shows `2 total · 2 running` and BOTH settings cards
+  render with their own Save.
+
+The compat suite gained a `COMPAT_EXEMPT` hook: dsh 0.2.1 refuses to mount a plugin whose peer
+range does not admit the runtime, so running the suite against such a dsh would fail at "the bundle
+did not mount" for a reason unrelated to the behaviour under test. The hook writes the
+profile-local exact-version grant, so the suite measures BEHAVIOUR and the peer range is judged
+separately.
+
+### Tests
+
+- 138 unit tests (was 138). The two peer assertions in `test/fetch-file.test.js` were updated to
+  the new range; they exist precisely to stop the peer range being changed silently.
+- Nine sink shapes covering the three causes were verified by hand against the real extractor.
+
 ## [0.11.4] - 2026-10-12
 
 ### Added — a convergence throttle: compaction as a last resort against "the model keeps calling it"
