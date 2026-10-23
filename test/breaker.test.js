@@ -643,39 +643,48 @@ test('T14b: DOCUMENTED BEHAVIOR — volume is not a loop signal, so a batch alwa
   assert.ok(run(tracker, repeat).hits.length > 0, 'repeating one resource is still a loop')
 })
 
-test('T14c: pagination — net: stays distinct, host: is the convergence measure', () => {
+test('T14c: pagination — net: stays distinct, and productive pages never reach the host cap', () => {
   const tracker = createTracker(cfg)
   const page = (n) => bash(`curl -sL "https://api.github.com/repos/o/r/commits?per_page=100&page=${n}"`)
-  for (let n = 1; n < HOST_CAP; n += 1) {
-    const { hits, fps } = run(tracker, page(n))
-    assert.deepEqual(hits, [], `page ${n} must be allowed`)
-    assert.equal(fps.filter((fp) => fp.startsWith('net:')).length, 1, 'one net: fingerprint per call')
+  const runThen = (tr, exec, failed) => {
+    const { fps } = fingerprints(exec, cfg)
+    const hits = tr.wouldExceed(exec.agent, fps)
+    tr.commit(exec.agent, fps, hits)
+    tr.noteOutcome(exec.agent, fps, failed)
+    return { hits, fps }
   }
 
-  // Eight DISTINCT pages never collide on `net:` — the 0.3.2 guarantee, and it still
-  // holds: the query is part of the fingerprint, so `?page=2` is a different
-  // resource from `?page=1`.
-  //
-  // They are, however, requests to ONE host, so `host:` has reached HOST_CAP - 1 and
-  // the next call to that host is the cap-th. That is the DESIGN, not a leftover of
-  // 0.3.2: `net:` stops punishing pagination, and `host:` bounds how many requests one
-  // target receives — with the two advisory stages underneath, where a paging model is
-  // told to use a larger per-batch amount instead of walking many small ones. A model
-  // that takes that advice finishes well under the gate; one that ignores it is exactly
-  // what the gate is for. The advice is deliberately backend-agnostic — the same shape
-  // appears when an agent reads a file line by line.
-  const ninth = run(tracker, page(HOST_CAP))
+  // Fourteen DISTINCT pages, every one productive: far past HOST_CAP and nothing accumulates.
+  // `net:` keeps the query (the 0.3.2 guarantee), and `host:` is withdrawn on delivery — a
+  // crawl of one site's pages is work, not repetition. This is the false positive measured on
+  // a real session: six distinct pages of one dataset on one host, denied as a repeat,
+  // costing eight of thirteen months of data.
+  for (let n = 1; n <= HOST_CAP + 4; n += 1) {
+    const { hits, fps } = runThen(tracker, page(n), null)
+    assert.equal(fps.filter((fp) => fp.startsWith('net:')).length, 1, 'one net: fingerprint per call')
+    assert.deepEqual(hits, [], `productive page ${n} must be allowed`)
+  }
+
+  // The same pages, each producing nothing: the breadth measure accumulates and gates.
+  const spinner = createTracker(cfg)
+  const failure = { reason: 'http', detail: { status: 404 } }
+  let gated = null
+  for (let n = 1; n <= HOST_CAP + 2 && gated === null; n += 1) {
+    const { hits } = runThen(spinner, page(n), failure)
+    if (hits.length > 0) gated = { n, hits }
+  }
+  assert.ok(gated !== null, 'a host that keeps producing nothing must reach its cap')
   assert.ok(
-    ninth.hits.some((entry) => entry.fp === 'host:api.github.com'),
-    `expected host: to accumulate across pages, got ${JSON.stringify(ninth.hits)}`,
+    gated.hits.some((entry) => entry.fp === 'host:api.github.com'),
+    `expected host: to gate the unproductive run, got ${JSON.stringify(gated.hits)}`,
   )
   assert.ok(
-    !ninth.hits.some((entry) => entry.fp.startsWith('net:')),
+    !gated.hits.some((entry) => entry.fp.startsWith('net:')),
     'and net: must NOT be what blocks: every page is a different resource',
   )
 })
 
-// ---------------------------------------------------------------------------
+
 // T17+ — local addresses, and the gate (`onLimit`)
 //
 // A call is LOCAL when it mentions at least one URL and every URL it mentions is
@@ -952,14 +961,25 @@ test('T28: a measure with no cap never escalates — the stages live BELOW the c
 
   // A CAP the operator turns ON makes the same measure escalate.
   const on = fakeCtx()
-  applyStandalone(on.ctx, { blockShellHttp: false, limits: { 'verb:curl': CAP } })
+  // A volume measure is a budget on calls that produced nothing, so the proof uses calls
+  // that produced nothing. The failure stages are off so only the occurrence stage speaks.
+  applyStandalone(on.ctx, {
+    blockShellHttp: false,
+    limits: { 'verb:curl': CAP },
+    failWarnAt: null,
+    failLimit: null,
+  })
   const onPost = on.handlers.get('tools/post-execute')
   const agent2 = { id: 'capped-agent' }
   const seen = []
   for (let i = 1; i <= WARN; i += 1) {
     const exec = bash(`curl -s https://host${i}.example.com/p`)
     on.guards[0](exec)
-    const decision = await onPost(exec, { content: [{ type: 'text', text: 'ok' }] }, noop)
+    const decision = await onPost(
+      exec,
+      { content: [{ type: 'text', text: '[stderr]\ncurl: (7) Failed to connect' }] },
+      noop,
+    )
     for (const message of decision?.additionalContexts ?? []) seen.push(message.content[0].text)
   }
   assert.equal(seen.length, 1, `the now-capped verb escalates exactly once, at ${WARN}`)
@@ -971,7 +991,9 @@ test('T29: when several measures cross together, the message names the useful on
   // Naming `exact:` quotes a truncated command line; the target is what the model can
   // act on.
   const { ctx, guards, handlers } = fakeCtx()
-  applyStandalone(ctx, { blockShellHttp: false,})
+  // Breadth crosses only for calls that produced nothing, so these calls fail; the failure
+  // stages are off so the only message is the occurrence stage's.
+  applyStandalone(ctx, { blockShellHttp: false, failWarnAt: null, failLimit: null })
   const post = handlers.get('tools/post-execute')
   const noop = async () => ({ kind: 'allow' })
   const agent = { id: 'tie-agent' }
@@ -980,7 +1002,11 @@ test('T29: when several measures cross together, the message names the useful on
   for (let i = 1; i <= WARN; i += 1) {
     const exec = bash(command)
     guards[0](exec)
-    const decision = await post(exec, { content: [{ type: 'text', text: 'ok' }] }, noop)
+      const decision = await post(
+        exec,
+        { content: [{ type: 'text', text: '[stderr]\ncurl: (7) Failed to connect' }] },
+        noop,
+      )
     for (const message of decision?.additionalContexts ?? []) seen.push(message.content[0].text)
   }
   assert.equal(seen.length, 1)
@@ -1214,6 +1240,70 @@ test('T37: failLimit validation is fail-loud, failWarnAt follows the stage rule'
     assert.equal(validateCfg(mergeDefaults({ failWarnAt: value })).failWarnAt, null)
   }
   assert.equal(validateCfg(mergeDefaults({ failWarnAt: 4 })).failWarnAt, 4)
+})
+
+
+test('T52: the measured false positive — six distinct pages of one host, all productive', async () => {
+  // session-97bb0007 (2026-10-23): the agent collected monthly snowfall for one airport. The
+  // six URLs below are the ones that reached `host: 6/6` under the old rule; they are five
+  // different pages of one dataset plus the December page that was denied. All six returned
+  // HTTP 200 and wrote a file, and the denial cost eight of thirteen months.
+  const urls = [
+    'https://climate.weather.gc.ca/historical_data/getData_e.html?search_type=data_stn&stnID=4248',
+    'https://climate.weather.gc.ca/historical_data/search_historic_data_e.html',
+    'https://climate.weather.gc.ca/historical_data/search_historic_data_stations_e.html?stnID=4248',
+    'https://climate.weather.gc.ca/climate_data/daily_data_e.html?climate_id=6106001&Month=10',
+    'https://climate.weather.gc.ca/climate_data/daily_data_e.html?climate_id=6106001&Month=11',
+    'https://climate.weather.gc.ca/climate_data/daily_data_e.html?climate_id=6106001&Month=12',
+  ]
+  const fetch = (ctx, url, agent) => ({
+    name: 'web_fetch_file',
+    arguments: { url, path: '/workspace/fetched/page.html' },
+    agent,
+  })
+
+  // --- productive: every page writes a file, none may be denied ---
+  const ok = fakeCtx()
+  applyStandalone(ok.ctx, {
+    blockShellHttp: false,
+    limits: { host: 6 },
+    warnAt: 3,
+    summarizeAt: 5,
+    failWarnAt: null,
+    failLimit: null,
+  })
+  const okPost = ok.handlers.get('tools/post-execute')
+  const noop = async () => ({ kind: 'allow' })
+  const a = { id: 'productive-agent' }
+  for (const [i, url] of urls.entries()) {
+    const exec = fetch(ok.ctx, url, a)
+    const denied = ok.guards[0](exec)
+    assert.equal(denied, undefined, `page ${i + 1} must be allowed, not denied as a repeat`)
+    await okPost(exec, { content: [{ type: 'text', text: 'Fetched (HTTP 200) -> /workspace/fetched/x' }], value: { statusCode: 200 } }, noop)
+  }
+
+  // --- the shape the measure exists for: the same breadth, nothing produced ---
+  const bad = fakeCtx()
+  applyStandalone(bad.ctx, {
+    blockShellHttp: false,
+    limits: { host: 6 },
+    warnAt: 3,
+    summarizeAt: 5,
+    failWarnAt: null,
+    failLimit: null,
+  })
+  const badPost = bad.handlers.get('tools/post-execute')
+  const b = { id: 'unproductive-agent' }
+  let deniedAt = null
+  for (const [i, url] of urls.entries()) {
+    const exec = fetch(bad.ctx, url, b)
+    const denied = bad.guards[0](exec)
+    if (denied !== undefined) { deniedAt = { i: i + 1, text: denied }; break }
+    await badPost(exec, { content: [{ type: 'text', text: 'Fetched (HTTP 404) -> /workspace/fetched/x' }], value: { statusCode: 404 } }, noop)
+  }
+  assert.ok(deniedAt !== null, 'a host that keeps returning nothing must still be gated')
+  assert.equal(deniedAt.i, 6, `the cap-th unproductive call is the denied one, got ${deniedAt.i}`)
+  assert.match(deniedAt.text, /host:climate\.weather\.gc\.ca/)
 })
 
 // ---------------------------------------------------------------------------

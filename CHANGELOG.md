@@ -232,6 +232,55 @@ gap, and a Save from the new home lands in the profile patch.
 
 ## [Unreleased]
 
+## [0.11.7] - 2026-10-23
+
+### Fixed — a crawl of one site's pages was denied as a "repeat", and it cost real data
+
+Reported from a real session (`session-97bb0007`, a weather-data task): six **distinct** pages of
+one dataset on `climate.weather.gc.ca` reached `host: 6/6` and the sixth was denied as
+`REPEAT_TOOL_BLOCKED: repeated web_fetch_file (semantic match)`. The five counted pages were a
+search form, a station search and three monthly data pages; the denied one was the next month. The
+run ended with eight of thirteen months missing, because the denial left no route: shell HTTP is
+blocked by design (redirected to `web_fetch_file`), and `web_fetch_file` was then blocked by its own
+breadth cap.
+
+The cause is a design-level conflation, not a bad threshold. `host:` discards the URL path on
+purpose, so "many different pages of one dataset" and "one broken endpoint, hit again and again"
+are the same shape to it. 0.4.1 had already recorded this ("it discards the URL path, so installing
+many packages from one mirror and re-fetching one broken URL look identical to it") and answered it
+by loosening the cap to 16 — the window itself. That moves the collision, it does not remove it.
+
+The two jobs are now separated:
+
+- **Identity** fingerprints (`exact:`, `cmd:`, `net:`, `sink:`) still count every call. An identical
+  action is repetition whether or not it worked.
+- **Breadth** fingerprints (`host:`, `site:`, `family:`, `verb:`) are recorded at guard time, when
+  the outcome is unknown, and **taken back when the call settles with a result**. A call that
+  produced something is work, not repetition. Failures keep their count, so the shape the measure
+  exists for still accumulates.
+
+The failure track is untouched. "A different script each time, same host, all failing" (T42) still
+fires, because a run of failures is a run of failures no matter how the action is spelled.
+
+`host: 6` no longer needs raising in the profile that reported this: productive pages stop counting,
+and an unproductive run still gates at the sixth call.
+
+### Fixed — the stage-2 advisory asserted an outcome it could not know
+
+The summarise demand said "has now come up N times this turn **without producing a result**" for a
+count that ignored outcomes. In the reporting session four of the five counted calls had returned
+HTTP 200 and written files. The claim is removed; the count and the demand stay.
+
+### Tests
+
+139 unit tests (was 138). T52 replays the measured window — the six real URLs, then the same six
+with nothing produced — and asserts that the productive run is never denied while the unproductive
+one is denied on the sixth call. T14c now proves both halves of the breadth rule (fourteen
+productive pages accumulate nothing; unproductive ones gate), and T28/T29 drive unproductive calls,
+which is the only shape in which a volume measure speaks.
+
+The seven-scenario compat suite passes on dsh 0.2.1-rc.2.
+
 ## [0.11.6] - 2026-10-12
 
 ### Fixed — the peer range was wider than what was verified
